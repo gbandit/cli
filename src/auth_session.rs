@@ -1,5 +1,6 @@
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -407,14 +408,26 @@ pub(crate) async fn load_auth() -> Result<CliAuth> {
 }
 
 fn save_credentials(credentials: &StoredCredentials) -> Result<()> {
-    let path = credentials_path()?;
+    write_credentials_file(&credentials_path()?, credentials)
+}
+
+/// The session token is written to a temp file in the same directory and
+/// renamed into place: the file carries mode 0600 before the first byte lands,
+/// and a crash mid-write never leaves a half-written file. Windows has no mode
+/// bits; there `%APPDATA%` is already private to the user via the profile ACL.
+fn write_credentials_file(path: &Path, credentials: &StoredCredentials) -> Result<()> {
     let parent = path
         .parent()
         .context("credentials path must have a parent directory")?;
     fs::create_dir_all(parent)
         .with_context(|| format!("failed to create credentials dir {}", parent.display()))?;
     let json = serde_json::to_vec_pretty(credentials)?;
-    fs::write(&path, json)
+    let mut file = tempfile::Builder::new()
+        .prefix(".credentials-")
+        .tempfile_in(parent)
+        .with_context(|| format!("failed to create temp file in {}", parent.display()))?;
+    file.write_all(&json)?;
+    file.persist(path)
         .with_context(|| format!("failed to write credentials file {}", path.display()))?;
     Ok(())
 }
@@ -442,8 +455,11 @@ fn load_credentials() -> Result<StoredCredentials> {
         });
     }
 
-    let path = credentials_path()?;
-    let bytes = match fs::read(&path) {
+    read_credentials_file(&credentials_path()?)
+}
+
+fn read_credentials_file(path: &Path) -> Result<StoredCredentials> {
+    let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             bail!("You are not logged in. Run `gbandit login` to get started.")
@@ -453,12 +469,37 @@ fn load_credentials() -> Result<StoredCredentials> {
                 .with_context(|| format!("failed to read credentials file {}", path.display()));
         }
     };
+    restrict_to_owner(path)?;
     serde_json::from_slice(&bytes).with_context(|| {
         format!(
             "credentials file {} is unreadable — run `gbandit login` to re-authenticate",
             path.display()
         )
     })
+}
+
+/// Files written by older CLI versions got their mode from the umask, typically
+/// 0644. Tighten to 0600 on sight and say so, since the token was exposed.
+#[cfg(unix)]
+fn restrict_to_owner(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = fs::metadata(path)?.permissions();
+    if perms.mode() & 0o077 == 0 {
+        return Ok(());
+    }
+    perms.set_mode(0o600);
+    fs::set_permissions(path, perms)
+        .with_context(|| format!("failed to restrict permissions on {}", path.display()))?;
+    eprintln!(
+        "warning: {} was readable by other users on this machine; permissions tightened to 0600.",
+        path.display()
+    );
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn restrict_to_owner(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 fn credentials_path() -> Result<PathBuf> {
@@ -485,5 +526,63 @@ fn credentials_identity() -> String {
         labels[labels.len() - 2..].join(".")
     } else {
         host
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::{StoredCredentials, read_credentials_file, write_credentials_file};
+
+    fn mode(path: &std::path::Path) -> u32 {
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    fn credentials(token: &str) -> StoredCredentials {
+        StoredCredentials {
+            auth_origin: "https://auth.example.test".into(),
+            platform_api_origin: "https://platform.example.test".into(),
+            session_token: token.into(),
+            session_expires_at: "2099-01-01T00:00:00Z".into(),
+            user_id: "user-1".into(),
+            email: Some("u@example.test".into()),
+            name: None,
+            browser_handoff_shown: false,
+        }
+    }
+
+    #[test]
+    fn credentials_file_is_owner_only_and_a_loose_file_gets_repaired() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join("gbandit")
+            .join("credentials-example.test.json");
+
+        write_credentials_file(&path, &credentials("first")).unwrap();
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(read_credentials_file(&path).unwrap().session_token, "first");
+
+        // Overwriting replaces the content and leaves no temp file behind.
+        write_credentials_file(&path, &credentials("second")).unwrap();
+        assert_eq!(
+            read_credentials_file(&path).unwrap().session_token,
+            "second"
+        );
+        let entries: Vec<_> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, vec![path.file_name().unwrap()]);
+
+        // A file left by an older CLI with umask permissions is tightened on read.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            read_credentials_file(&path).unwrap().session_token,
+            "second"
+        );
+        assert_eq!(mode(&path), 0o600);
     }
 }
