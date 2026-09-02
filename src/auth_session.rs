@@ -225,6 +225,9 @@ fn session_cookie_value(response: &reqwest::Response) -> Option<String> {
         .iter()
         .filter_map(|value| value.to_str().ok())
         .find_map(|cookie| {
+            // Prod frames the session as `__Host-gbandit_session`; dev, over
+            // plain http, cannot use the prefix.
+            let cookie = cookie.strip_prefix("__Host-").unwrap_or(cookie);
             cookie
                 .strip_prefix("gbandit_session=")?
                 .split(';')
