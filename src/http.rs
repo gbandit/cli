@@ -97,10 +97,22 @@ pub(crate) async fn parse_json<T: for<'de> Deserialize<'de>>(
 
 pub(crate) async fn parse_error(response: reqwest::Response) -> ApiError {
     let status = response.status();
-    let mut parsed = match response.json::<ApiError>().await {
+    // auth-service answers with a plain-text sentence rather than JSON; that
+    // sentence is the message worth showing.
+    let plain_text = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/plain"));
+    let bytes = response.bytes().await.unwrap_or_default();
+    let mut parsed = match serde_json::from_slice::<ApiError>(&bytes) {
         Ok(payload) => payload,
         Err(_) => ApiError {
-            error: format!("request failed with status {status}"),
+            error: if plain_text && !bytes.trim_ascii().is_empty() {
+                body_snippet(&bytes)
+            } else {
+                format!("request failed with status {status}")
+            },
             code: None,
             issues: Vec::new(),
         },

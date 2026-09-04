@@ -76,12 +76,12 @@ pub(crate) async fn login(printer: &Printer) -> Result<()> {
     let start: CliLoginStartResponse = parse_json(response).await?;
     let login_expires_at = chrono::DateTime::parse_from_rfc3339(&start.expires_at).ok();
 
-    printer.progress("Open this URL to complete login:");
+    printer.progress("Open this URL and approve the login:");
     printer.progress(&start.authorize_url);
     if webbrowser::open(&start.authorize_url).is_ok() {
         printer.progress("Opened browser window.");
     }
-    printer.progress("Waiting for login approval...");
+    printer.progress("Waiting for approval in the browser...");
 
     loop {
         if let Some(expiry) = login_expires_at
