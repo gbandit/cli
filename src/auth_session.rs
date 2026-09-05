@@ -40,6 +40,11 @@ struct AccessTokenResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct AgentTokensResponse {
+    cli_token: AccessTokenResponse,
+}
+
+#[derive(Debug, Deserialize)]
 struct CliLoginPollCompleteResponse {
     session_token: String,
     session_expires_at: String,
@@ -237,15 +242,10 @@ fn session_cookie_value(response: &reqwest::Response) -> Option<String> {
         })
 }
 
-/// True when a deploy can authenticate without creating anything: env-provided
-/// tokens or a stored credentials file.
+/// True when a deploy can authenticate without creating anything: a workload
+/// identity, an env-provided session or a stored credentials file.
 pub(crate) fn has_credentials() -> bool {
-    if let Ok(token) = std::env::var("GBANDIT_ACCESS_TOKEN")
-        && !token.trim().is_empty()
-    {
-        return true;
-    }
-    load_credentials().is_ok()
+    workload_token_file().is_some() || load_credentials().is_ok()
 }
 
 /// One-time "View your project" link after the first successful deploy: mints
@@ -253,10 +253,8 @@ pub(crate) fn has_credentials() -> bool {
 /// no browser cookie) opens the platform already signed in. Best-effort — any
 /// failure just skips the link.
 pub(crate) async fn first_deploy_handoff_link(redirect: &str) -> Option<String> {
-    // Env-provided sessions (agent pods, e2e, CI) have no human at a browser.
-    if std::env::var("GBANDIT_ACCESS_TOKEN").is_ok()
-        || std::env::var("GBANDIT_SESSION_TOKEN").is_ok()
-    {
+    // Agent pods and env-provided sessions (e2e, CI) have no human at a browser.
+    if workload_token_file().is_some() || std::env::var("GBANDIT_SESSION_TOKEN").is_ok() {
         return None;
     }
     let mut credentials = load_credentials().ok()?;
@@ -391,16 +389,15 @@ fn session_rejected_message(credentials: &StoredCredentials) -> String {
     }
 }
 
-/// Uses `GBANDIT_ACCESS_TOKEN` (e.g. inside an agent pod) when set;
-/// otherwise loads disk credentials and mints a fresh access token.
+/// Inside a Pi Agent pod the CLI has a workload identity and exchanges it for
+/// a fresh access token on every run; otherwise it loads disk credentials and
+/// mints one from the stored session.
 pub(crate) async fn load_auth() -> Result<CliAuth> {
-    if let Ok(token) = std::env::var("GBANDIT_ACCESS_TOKEN") {
-        if !token.trim().is_empty() {
-            return Ok(CliAuth {
-                token,
-                platform_api_origin: platform_api_origin(),
-            });
-        }
+    if let Some(token_file) = workload_token_file() {
+        return Ok(CliAuth {
+            token: workload_access_token(&token_file).await?,
+            platform_api_origin: platform_api_origin(),
+        });
     }
     let credentials = load_credentials()?;
     let token = cli_access_token(&credentials).await?;
@@ -408,6 +405,41 @@ pub(crate) async fn load_auth() -> Result<CliAuth> {
         token,
         platform_api_origin: credentials.platform_api_origin,
     })
+}
+
+/// The projected Kubernetes ServiceAccount token platform-api mounts into
+/// every Pi Agent pod. Set means "this is an agent"; a human's shell never
+/// has it.
+fn workload_token_file() -> Option<PathBuf> {
+    std::env::var_os("GBANDIT_WORKLOAD_TOKEN_FILE")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+/// auth-service asks the API server to vouch for the token, checks the agent's
+/// user and project, and answers with tokens that live minutes. kubelet keeps
+/// the file itself fresh, so there is nothing to cache here.
+async fn workload_access_token(token_file: &Path) -> Result<String> {
+    let workload_token = fs::read_to_string(token_file).with_context(|| {
+        format!(
+            "failed to read workload identity token {}",
+            token_file.display()
+        )
+    })?;
+    let response = http_client()
+        .post(format!("{}/api/agent/session-tokens", auth_origin()))
+        .bearer_auth(workload_token.trim())
+        .send()
+        .await
+        .context("failed to exchange workload identity for an access token")?;
+    // auth-service answers plain text, not the platform's JSON error shape.
+    if !response.status().is_success() {
+        let status = response.status();
+        let detail = response.text().await.unwrap_or_default();
+        bail!("auth-service refused this pod's workload identity ({status}): {detail}");
+    }
+    let tokens: AgentTokensResponse = parse_json(response).await?;
+    Ok(tokens.cli_token.access_token)
 }
 
 fn save_credentials(credentials: &StoredCredentials) -> Result<()> {
