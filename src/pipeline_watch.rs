@@ -10,18 +10,16 @@ use crate::printer::Printer;
 #[serde(rename_all = "snake_case")]
 enum PipelineStageKey {
     FrontendBuild,
-    FrontendPublish,
     BackendBuild,
-    BackendDeploy,
+    Rollout,
 }
 
 impl PipelineStageKey {
     fn as_str(self) -> &'static str {
         match self {
             Self::FrontendBuild => "frontend_build",
-            Self::FrontendPublish => "frontend_publish",
             Self::BackendBuild => "backend_build",
-            Self::BackendDeploy => "backend_deploy",
+            Self::Rollout => "rollout",
         }
     }
 }
@@ -43,9 +41,8 @@ struct PipelineRun {
     status: String,
     error_summary: Option<String>,
     frontend_build: PipelineChildStatus,
-    frontend_publish: PipelineChildStatus,
     backend_build: PipelineChildStatus,
-    backend_deploy: PipelineChildStatus,
+    rollout: PipelineChildStatus,
 }
 
 #[derive(Debug, Deserialize)]
@@ -421,9 +418,8 @@ fn pipeline_stages(pipeline: &PipelineRun) -> Vec<(&'static str, &PipelineChildS
         .map(|stage| {
             let child = match stage {
                 PipelineStageKey::FrontendBuild => &pipeline.frontend_build,
-                PipelineStageKey::FrontendPublish => &pipeline.frontend_publish,
                 PipelineStageKey::BackendBuild => &pipeline.backend_build,
-                PipelineStageKey::BackendDeploy => &pipeline.backend_deploy,
+                PipelineStageKey::Rollout => &pipeline.rollout,
             };
             (stage.as_str(), child)
         })
