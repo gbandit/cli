@@ -169,7 +169,7 @@ impl std::fmt::Display for Environment {
     }
 }
 
-#[derive(Clone, Debug, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub(crate) enum LogTarget {
     Backend,
     Frontend,

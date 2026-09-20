@@ -158,6 +158,15 @@ async fn logs(
     let logs = client.logs(environment, project, source).await?;
     if logs.is_empty() {
         printer.progress(&format!("No {source} logs recorded."));
+        // The platform cannot see into a browser: an empty frontend stream is
+        // more often a frontend that never posts than a game with nothing to say.
+        if component == LogTarget::Frontend {
+            printer.progress(
+                "Frontend logs only arrive if your frontend sends them. The gbandit template \
+                 does this out of the box; an existing app needs to post its browser errors \
+                 to the platform. See `gbandit docs frontend-logs`.",
+            );
+        }
         return Ok(());
     }
 
