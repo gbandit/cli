@@ -58,26 +58,24 @@ impl PlatformClient {
             .with_context(|| format!("query against project '{project}' ({environment}) failed"))
     }
 
+    /// A deploy always builds and rolls out to dev; prod never builds and is
+    /// reached with `promote`, so there is no target to name.
     pub(crate) async fn start_deploy<F>(
         &self,
         project: &str,
-        environment: &str,
         make_form: F,
     ) -> Result<DeployPipeline>
     where
         F: Fn() -> Result<Form>,
     {
-        let url = format!(
-            "{}/projects/{}/deploys?environment={}",
-            self.origin, project, environment
-        );
+        let url = format!("{}/projects/{}/deploys", self.origin, project);
         let response = self
-            .post_multipart_with_retry(&url, &make_form)
+            .post_with_retry(&url, |request| Ok(request.multipart(make_form()?)))
             .await
             .context("failed to send deploy request")?;
-        parse_json(response).await.with_context(|| {
-            format!("failed to start deploy for project '{project}' ({environment})")
-        })
+        parse_json(response)
+            .await
+            .with_context(|| format!("failed to start deploy for project '{project}'"))
     }
 
     /// `Ok(None)` = the platform skipped the baseline deploy (200 instead of
@@ -85,43 +83,38 @@ impl PlatformClient {
     pub(crate) async fn start_baseline_deploy<F>(
         &self,
         project: &str,
-        environment: &str,
         make_form: F,
     ) -> Result<Option<DeployPipeline>>
     where
         F: Fn() -> Result<Form>,
     {
-        let url = format!(
-            "{}/projects/{}/deploys/baseline?environment={}",
-            self.origin, project, environment
-        );
+        let url = format!("{}/projects/{}/deploys/baseline", self.origin, project);
         let response = self
-            .post_multipart_with_retry(&url, &make_form)
+            .post_with_retry(&url, |request| Ok(request.multipart(make_form()?)))
             .await
             .context("failed to send baseline deploy request")?;
         if response.status() == reqwest::StatusCode::OK {
             return Ok(None);
         }
         Ok(Some(parse_json(response).await.with_context(|| {
-            format!("failed to start baseline deploy for project '{project}' ({environment})")
+            format!("failed to start baseline deploy for project '{project}'")
         })?))
     }
 
-    async fn post_multipart_with_retry<F>(
-        &self,
-        url: &str,
-        make_form: &F,
-    ) -> Result<reqwest::Response>
+    /// POST with three attempts over transport failures and 5xx. `body` is
+    /// applied per attempt rather than once, because a multipart body is
+    /// consumed by the attempt that sends it and has to be rebuilt.
+    ///
+    /// Retrying is only safe because every caller carries an idempotency key:
+    /// the platform attaches a repeat of the same SubmissionId to the run the
+    /// first attempt started rather than starting a second one.
+    async fn post_with_retry<F>(&self, url: &str, body: F) -> Result<reqwest::Response>
     where
-        F: Fn() -> Result<Form>,
+        F: Fn(reqwest::RequestBuilder) -> Result<reqwest::RequestBuilder>,
     {
         let mut last_transport_error = None;
         for attempt in 0..3 {
-            let request = self
-                .http
-                .post(url)
-                .bearer_auth(&self.token)
-                .multipart(make_form()?);
+            let request = body(self.http.post(url).bearer_auth(&self.token))?;
             match request.send().await {
                 Ok(response) if response.status().is_server_error() && attempt < 2 => {
                     tokio::time::sleep(std::time::Duration::from_millis(250 * (attempt + 1))).await;
@@ -382,4 +375,42 @@ pub(crate) enum SlugAvailability {
     TakenByYou,
     TakenByOther,
     Deleting,
+}
+
+/// A started promotion, as the platform reports it. `from_*` describe what
+/// prod served when the promotion began; `from_release_id` is `None` on the
+/// first promotion, when prod has never run anything.
+#[derive(Debug, Deserialize, Serialize)]
+pub(crate) struct PromotionStarted {
+    pub(crate) pipeline_run_id: i64,
+    pub(crate) status: String,
+    pub(crate) release_id: String,
+    pub(crate) from_release_id: Option<String>,
+    pub(crate) from_commit_sha: Option<String>,
+    pub(crate) to_commit_sha: Option<String>,
+    pub(crate) created_at: String,
+}
+
+impl PlatformClient {
+    /// Point prod at the Release dev runs. One submission id across the
+    /// retries, so a retry after a dropped response attaches to the run the
+    /// first attempt started instead of starting a second one.
+    pub(crate) async fn start_promotion(
+        &self,
+        project: &str,
+        confirm_database_removal: bool,
+    ) -> Result<PromotionStarted> {
+        let url = format!("{}/projects/{}/promote", self.origin, project);
+        let body = serde_json::json!({
+            "submission_id": uuid::Uuid::new_v4().to_string(),
+            "confirm_database_removal": confirm_database_removal,
+        });
+        let response = self
+            .post_with_retry(&url, |request| Ok(request.json(&body)))
+            .await
+            .context("failed to send promote request")?;
+        parse_json(response)
+            .await
+            .with_context(|| format!("failed to promote project '{project}'"))
+    }
 }

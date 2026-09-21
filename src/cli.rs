@@ -35,9 +35,9 @@ pub(crate) enum Command {
         #[arg(long)]
         project: Option<String>,
     },
+    /// Build the project and roll it out to dev. Prod never builds; `gbandit
+    /// promote` is how it changes.
     Deploy {
-        #[arg(short, long, default_value_t = Environment::Dev)]
-        environment: Environment,
         #[arg(long)]
         project: Option<String>,
         /// Becomes the git commit message and the deploy's label in the history.
@@ -58,6 +58,23 @@ pub(crate) enum Command {
         #[arg(long)]
         confirm_database_removal: bool,
         /// Return after starting the deployment instead of waiting for completion.
+        #[arg(long)]
+        detach: bool,
+        /// Emit stable machine-readable JSON on stdout.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Point prod at the Release dev is running and roll it out. Nothing is
+    /// built: prod serves exactly the images dev was verified with.
+    Promote {
+        #[arg(long)]
+        project: Option<String>,
+        /// Confirm removing prod's database when the Release dev runs no
+        /// longer declares one. Without it the platform rejects such a
+        /// promotion; interactive runs are prompted instead.
+        #[arg(long)]
+        confirm_database_removal: bool,
+        /// Return after starting the promotion instead of waiting for completion.
         #[arg(long)]
         detach: bool,
         /// Emit stable machine-readable JSON on stdout.

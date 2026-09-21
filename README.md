@@ -30,13 +30,14 @@ Prebuilt binaries are published for:
 
 ```sh
 gbandit deploy --message "<what you just changed>"
+gbandit promote
 gbandit logs [frontend|backend]
 gbandit sql "SELECT ..."
 gbandit env [set|list|delete]
 gbandit update
 ```
 
-`gbandit deploy` defaults to the `dev` environment. Pass `--environment prod` for prod.
+`gbandit deploy` builds and rolls out to `dev`; it takes no environment, because dev is the only one a build can reach. Prod never builds: `gbandit promote` points prod at the Release dev is running and rolls it out, so prod serves exactly what you verified in dev.
 
 `gbandit update` downloads the latest GitHub release for your OS/architecture and replaces the installed binary. Pin a specific release with `gbandit update --tag vX.Y.Z`.
 

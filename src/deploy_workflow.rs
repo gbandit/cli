@@ -8,7 +8,7 @@ use crate::config::ProjectConfig;
 use crate::deploy_archive::build_project_archive;
 use crate::git;
 use crate::http::ApiError;
-use crate::pipeline_watch::watch_deploy_pipeline;
+use crate::pipeline_watch::watch_pipeline;
 use crate::platform_client::{DeployPipeline, PlatformClient};
 use crate::printer::Printer;
 use crate::scaffold::title_from_slug;
@@ -16,7 +16,6 @@ use crate::scaffold::title_from_slug;
 /// Everything the deploy command chose at the CLI layer, built once and
 /// threaded through the workflow as a unit.
 pub(crate) struct DeployArgs {
-    pub(crate) environment: String,
     pub(crate) message: Option<String>,
     pub(crate) baseline: bool,
     pub(crate) create: bool,
@@ -149,12 +148,8 @@ impl<'a> DeployWorkflow<'a> {
         self.ensure_project(&client, config, args.create, args.json)
             .await?;
 
-        let (commit_sha, deploy_message) = prepare_commit(
-            self.printer,
-            config.auto_commit(),
-            &args.environment,
-            args.message.as_deref(),
-        )?;
+        let (commit_sha, deploy_message) =
+            prepare_commit(self.printer, config.auto_commit(), args.message.as_deref())?;
 
         // Push gate (ADR 0005): if `origin` is configured, push must succeed
         // before the Pipeline Run is triggered. Dirty local-dev deploys have no
@@ -215,8 +210,8 @@ impl<'a> DeployWorkflow<'a> {
             println!("{}", serde_json::to_string(&upload)?);
         } else if args.detach {
             self.printer.progress(format!(
-                "Started {} deployment for project {} (#{}).",
-                args.environment, config.project, upload.pipeline_run_id
+                "Started deployment for project {} (#{}).",
+                config.project, upload.pipeline_run_id
             ));
         }
 
@@ -224,16 +219,15 @@ impl<'a> DeployWorkflow<'a> {
             return Ok(());
         }
 
-        self.printer.progress(format!(
-            "Deploying {} for project {}...",
-            args.environment, config.project
-        ));
-        watch_deploy_pipeline(
+        self.printer
+            .progress(format!("Deploying project {}...", config.project));
+        watch_pipeline(
             self.printer,
             prepared.client.http(),
             prepared.client.origin(),
             prepared.client.token(),
             upload.pipeline_run_id,
+            "Deploy",
         )
         .await
     }
@@ -271,13 +265,13 @@ impl<'a> DeployWorkflow<'a> {
         let upload = if args.baseline {
             prepared
                 .client
-                .start_baseline_deploy(&config.project, &args.environment, make_form)
+                .start_baseline_deploy(&config.project, make_form)
                 .await?
         } else {
             Some(
                 prepared
                     .client
-                    .start_deploy(&config.project, &args.environment, make_form)
+                    .start_deploy(&config.project, make_form)
                     .await?,
             )
         };
@@ -356,7 +350,7 @@ fn confirm_create(slug: &str, json: bool) -> Result<bool> {
 
 /// Type-the-slug friction, mirroring `project delete`: removing a database
 /// is destructive and must not happen off a reflexive "y".
-fn confirm_database_removal_prompt(project: &str) -> Result<()> {
+pub(crate) fn confirm_database_removal_prompt(project: &str) -> Result<()> {
     crate::printer::confirm_typed(
         "Type the project name to confirm removing the database: ",
         project,
@@ -366,7 +360,7 @@ fn confirm_database_removal_prompt(project: &str) -> Result<()> {
 
 /// `--json` failure line for stdout: the platform's structured error payload
 /// ({error, code?, issues?}) plus status, matching the success-line shape.
-fn json_error_payload(err: &anyhow::Error) -> String {
+pub(crate) fn json_error_payload(err: &anyhow::Error) -> String {
     let mut payload = match err.downcast_ref::<ApiError>() {
         Some(api) => {
             serde_json::to_value(api).unwrap_or_else(|_| serde_json::json!({ "error": api.error }))
@@ -416,12 +410,12 @@ fn push_or_abort(printer: &Printer) -> Result<()> {
 fn prepare_commit(
     printer: &Printer,
     auto_commit: bool,
-    environment: &str,
     message: Option<&str>,
 ) -> Result<(Option<String>, Option<String>)> {
     let deploy_message = message.map(str::to_string);
-    let canned = || format!("gbandit deploy {environment}");
-    let commit_message = message.map(str::to_string).unwrap_or_else(canned);
+    let commit_message = message
+        .map(str::to_string)
+        .unwrap_or_else(|| "gbandit deploy".to_string());
 
     if !git::in_repo()? {
         if !auto_commit {

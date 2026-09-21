@@ -8,6 +8,7 @@ use crate::config::{load_project_config, resolve_project};
 use crate::deploy_workflow::{DeployArgs, DeployWorkflow};
 use crate::platform_client::{PlatformClient, ProjectDeleteOutcome};
 use crate::printer::Printer;
+use crate::promote_workflow::{PromoteArgs, promote};
 use crate::query_table::QueryTable;
 use crate::release_installer::ReleaseInstaller;
 use crate::scaffold_command;
@@ -41,7 +42,6 @@ pub(crate) async fn run(command: Command, printer: &Printer) -> Result<()> {
             Ok(())
         }
         Command::Deploy {
-            environment,
             project,
             message,
             baseline,
@@ -52,7 +52,6 @@ pub(crate) async fn run(command: Command, printer: &Printer) -> Result<()> {
         } => {
             let config = load_project_config(project)?;
             let args = DeployArgs {
-                environment: environment.as_str().to_string(),
                 message,
                 baseline,
                 create,
@@ -61,6 +60,20 @@ pub(crate) async fn run(command: Command, printer: &Printer) -> Result<()> {
                 json,
             };
             DeployWorkflow::new(printer).deploy(&config, &args).await
+        }
+        Command::Promote {
+            project,
+            confirm_database_removal,
+            detach,
+            json,
+        } => {
+            let project = resolve_project(project)?;
+            let args = PromoteArgs {
+                confirm_database_removal,
+                detach,
+                json,
+            };
+            promote(printer, &project, &args).await
         }
         Command::Logs {
             environment,

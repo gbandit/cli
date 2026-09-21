@@ -9,6 +9,7 @@ mod http;
 mod pipeline_watch;
 mod platform_client;
 mod printer;
+mod promote_workflow;
 mod query_table;
 mod release_installer;
 mod scaffold;
@@ -28,7 +29,10 @@ async fn main() -> Result<()> {
     let printer = Printer {
         verbose: cli.verbose,
         timestamps: cli.timestamps,
-        json: matches!(&cli.command, Command::Deploy { json: true, .. }),
+        json: matches!(
+            &cli.command,
+            Command::Deploy { json: true, .. } | Command::Promote { json: true, .. }
+        ),
     };
     commands::run(cli.command, &printer).await
 }

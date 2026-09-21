@@ -76,19 +76,23 @@ type StageLogBuffer = HashMap<String, Vec<(Option<String>, String)>>;
 type StageLogClock = HashMap<String, chrono::DateTime<chrono::Utc>>;
 
 enum StreamOutcome {
-    /// The pipeline reached a terminal state; carries the deploy result.
+    /// The pipeline reached a terminal state; carries the run's result.
     Terminal(Result<()>),
     /// The connection dropped (transport EOF, idle reset, proxy reload) before a
     /// terminal event. The caller reconnects with `?since=` and resumes.
     Disconnected,
 }
 
-pub(crate) async fn watch_deploy_pipeline(
+/// Follow a run to its end. `label` names the run the way the user started
+/// it, "Deploy" or "Promotion", and heads every line that speaks about the
+/// run as a whole.
+pub(crate) async fn watch_pipeline(
     printer: &Printer,
     client: &reqwest::Client,
     platform_api_origin: &str,
     token: &str,
     pipeline_run_id: i64,
+    label: &str,
 ) -> Result<()> {
     // The server's event stream is resumable (`?since=N`; each event carries its
     // sequence as the SSE `id:`), so a dropped connection mid-build isn't fatal:
@@ -114,6 +118,7 @@ pub(crate) async fn watch_deploy_pipeline(
             &mut buffers,
             &mut log_clock,
             &mut last_event_id,
+            label,
         )
         .await?
         {
@@ -128,9 +133,10 @@ pub(crate) async fn watch_deploy_pipeline(
                 failures += 1;
                 if failures > MAX_RECONNECTS {
                     bail!(
-                        "lost connection to the deploy event stream after {MAX_RECONNECTS} reconnect attempts \
-                         — the deploy may still be running on the platform. \
-                         Check the project dashboard or `gbandit logs backend` to see how it ended."
+                        "lost connection to the {lower} event stream after {MAX_RECONNECTS} reconnect attempts \
+                         — the {lower} may still be running on the platform. \
+                         Check the project dashboard or `gbandit logs backend` to see how it ended.",
+                        lower = label.to_lowercase(),
                     );
                 }
                 printer.debug(
@@ -165,6 +171,7 @@ async fn stream_once(
     buffers: &mut StageLogBuffer,
     log_clock: &mut StageLogClock,
     last_event_id: &mut Option<i64>,
+    label: &str,
 ) -> Result<StreamOutcome> {
     let mut request = client
         .get(format!(
@@ -184,7 +191,8 @@ async fn stream_once(
     };
     if !response.status().is_success() {
         bail!(
-            "failed to follow deploy progress: {}",
+            "failed to follow {} progress: {}",
+            label.to_lowercase(),
             parse_error(response).await
         );
     }
@@ -201,22 +209,28 @@ async fn stream_once(
         while let Some(end) = buf.find("\n\n") {
             let raw_event = buf[..end].to_string();
             buf.drain(..end + 2);
-            if let Some(outcome) =
-                handle_sse_event(printer, buffers, log_clock, last_event_id, &raw_event)?
-            {
+            if let Some(outcome) = handle_sse_event(
+                printer,
+                buffers,
+                log_clock,
+                last_event_id,
+                &raw_event,
+                label,
+            )? {
                 return Ok(StreamOutcome::Terminal(outcome));
             }
         }
     }
 }
 
-/// `Some(result)` when the deploy reaches a terminal state.
+/// `Some(result)` when the run reaches a terminal state.
 fn handle_sse_event(
     printer: &Printer,
     buffers: &mut StageLogBuffer,
     log_clock: &mut StageLogClock,
     last_event_id: &mut Option<i64>,
     raw: &str,
+    label: &str,
 ) -> Result<Option<Result<()>>> {
     let mut event_type = String::new();
     let mut data_lines: Vec<&str> = Vec::new();
@@ -262,6 +276,7 @@ fn handle_sse_event(
                     printer,
                     &snap.status,
                     snap.error_summary,
+                    label,
                 )));
             }
         }
@@ -331,7 +346,7 @@ fn handle_sse_event(
             if stage == "pipeline" {
                 match delta.event.kind.as_str() {
                     "succeeded" => {
-                        printer.progress("Deploy succeeded.");
+                        printer.progress(format!("{label} succeeded."));
                         return Ok(Some(Ok(())));
                     }
                     "failed" => {
@@ -339,7 +354,7 @@ fn handle_sse_event(
                             .event
                             .detail
                             .clone()
-                            .unwrap_or_else(|| "deploy failed".into());
+                            .unwrap_or_else(|| format!("{} failed", label.to_lowercase()));
                         return Ok(Some(Err(anyhow::anyhow!("{}", summary))));
                     }
                     "cancelled" => {
@@ -348,7 +363,11 @@ fn handle_sse_event(
                             .detail
                             .clone()
                             .unwrap_or_else(|| "cancelled".into());
-                        return Ok(Some(Err(anyhow::anyhow!("deploy cancelled: {}", reason))));
+                        return Ok(Some(Err(anyhow::anyhow!(
+                            "{} cancelled: {}",
+                            label.to_lowercase(),
+                            reason
+                        ))));
                     }
                     _ => {}
                 }
@@ -399,14 +418,19 @@ fn dump_failed_stage(
     let _ = created_at;
 }
 
-fn finish_terminal(printer: &Printer, status: &str, error_summary: Option<String>) -> Result<()> {
+fn finish_terminal(
+    printer: &Printer,
+    status: &str,
+    error_summary: Option<String>,
+    label: &str,
+) -> Result<()> {
     if status == "succeeded" {
-        printer.progress("Deploy succeeded.");
+        printer.progress(format!("{label} succeeded."));
         Ok(())
     } else {
         bail!(
             "{}",
-            error_summary.unwrap_or_else(|| format!("deploy {status}"))
+            error_summary.unwrap_or_else(|| format!("{} {status}", label.to_lowercase()))
         )
     }
 }
