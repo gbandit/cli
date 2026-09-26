@@ -6,24 +6,6 @@ use serde::Deserialize;
 use crate::http::parse_error;
 use crate::printer::Printer;
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "snake_case")]
-enum PipelineStageKey {
-    FrontendBuild,
-    BackendBuild,
-    Rollout,
-}
-
-impl PipelineStageKey {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::FrontendBuild => "frontend_build",
-            Self::BackendBuild => "backend_build",
-            Self::Rollout => "rollout",
-        }
-    }
-}
-
 #[derive(Debug, Deserialize, Clone)]
 struct PipelineChildStatus {
     /// `None` when the stage hasn't reported yet. Used on snapshot/reconnect
@@ -35,14 +17,16 @@ struct PipelineChildStatus {
 
 #[derive(Debug, Deserialize, Clone)]
 struct PipelineRun {
-    /// Planned stages in execution order — drives which child statuses the
-    /// CLI watches and reports.
-    stages: Vec<PipelineStageKey>,
+    /// Planned stages in execution order, each reported under a key of the
+    /// same name. Stages are read by name rather than as fixed fields so that a
+    /// CLI keeps working against a platform that has added, renamed or dropped
+    /// one: a new CLI is published before the platform it was built against
+    /// rolls out, and users keep old CLIs long after.
+    stages: Vec<String>,
     status: String,
     error_summary: Option<String>,
-    frontend_build: PipelineChildStatus,
-    backend_build: PipelineChildStatus,
-    rollout: PipelineChildStatus,
+    #[serde(flatten)]
+    fields: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -435,21 +419,79 @@ fn finish_terminal(
     }
 }
 
-fn pipeline_stages(pipeline: &PipelineRun) -> Vec<(&'static str, &PipelineChildStatus)> {
+fn pipeline_stages(pipeline: &PipelineRun) -> Vec<(&str, PipelineChildStatus)> {
     pipeline
         .stages
         .iter()
-        .map(|stage| {
-            let child = match stage {
-                PipelineStageKey::FrontendBuild => &pipeline.frontend_build,
-                PipelineStageKey::BackendBuild => &pipeline.backend_build,
-                PipelineStageKey::Rollout => &pipeline.rollout,
-            };
-            (stage.as_str(), child)
+        .filter_map(|stage| {
+            let child = serde_json::from_value(pipeline.fields.get(stage)?.clone()).ok()?;
+            Some((stage.as_str(), child))
         })
         .collect()
 }
 
 fn is_terminal_status(status: &str) -> bool {
     matches!(status, "succeeded" | "failed" | "skipped" | "cancelled")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stage_names(snapshot: serde_json::Value) -> Vec<String> {
+        let run: PipelineRun = serde_json::from_value(snapshot).unwrap();
+        pipeline_stages(&run)
+            .into_iter()
+            .map(|(stage, _)| stage.to_string())
+            .collect()
+    }
+
+    fn child(status: &str) -> serde_json::Value {
+        serde_json::json!({ "status": status, "log_output": "" })
+    }
+
+    #[test]
+    fn reads_the_stages_the_platform_names_in_its_order() {
+        let snapshot = serde_json::json!({
+            "id": 7,
+            "status": "running",
+            "error_summary": null,
+            "stages": ["frontend_build", "backend_build", "rollout"],
+            "frontend_build": child("succeeded"),
+            "backend_build": child("running"),
+            "rollout": { "status": null, "log_output": "" },
+        });
+        assert_eq!(
+            stage_names(snapshot),
+            ["frontend_build", "backend_build", "rollout"]
+        );
+    }
+
+    #[test]
+    fn reads_stages_from_a_platform_older_than_the_cli() {
+        let snapshot = serde_json::json!({
+            "status": "running",
+            "error_summary": null,
+            "stages": ["frontend_build", "frontend_publish", "backend_build", "backend_deploy"],
+            "frontend_build": child("succeeded"),
+            "frontend_publish": child("succeeded"),
+            "backend_build": child("succeeded"),
+            "backend_deploy": child("running"),
+        });
+        assert_eq!(
+            stage_names(snapshot),
+            ["frontend_build", "frontend_publish", "backend_build", "backend_deploy"]
+        );
+    }
+
+    #[test]
+    fn skips_a_planned_stage_the_snapshot_reports_nothing_for() {
+        let snapshot = serde_json::json!({
+            "status": "pending",
+            "error_summary": null,
+            "stages": ["plan", "rollout"],
+            "rollout": child("pending"),
+        });
+        assert_eq!(stage_names(snapshot), ["rollout"]);
+    }
 }
