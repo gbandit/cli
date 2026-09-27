@@ -436,6 +436,9 @@ async fn workload_access_token(token_file: &Path) -> Result<String> {
     if !response.status().is_success() {
         let status = response.status();
         let detail = response.text().await.unwrap_or_default();
+        if crate::http::is_account_suspended(status, detail.as_bytes()) {
+            bail!(crate::http::ACCOUNT_SUSPENDED_MESSAGE);
+        }
         bail!("auth-service refused this pod's workload identity ({status}): {detail}");
     }
     let tokens: AgentTokensResponse = parse_json(response).await?;

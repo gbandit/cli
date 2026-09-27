@@ -117,12 +117,23 @@ pub(crate) async fn parse_error(response: reqwest::Response) -> ApiError {
             issues: Vec::new(),
         },
     };
-    if status == reqwest::StatusCode::UNAUTHORIZED {
+    if is_account_suspended(status, &bytes) {
+        parsed.error = ACCOUNT_SUSPENDED_MESSAGE.to_string();
+    } else if status == reqwest::StatusCode::UNAUTHORIZED {
         parsed.error = format!("{} — run `gbandit login` to re-authenticate", parsed.error);
     } else if parsed.has_code("cli_outdated") {
         parsed.error = format!("{} — run `gbandit update`", parsed.error);
     }
     parsed
+}
+
+pub(crate) const ACCOUNT_SUSPENDED_MESSAGE: &str =
+    "This account is suspended. Questions go to abuse@gbandit.com.";
+
+/// auth-service answers every session lookup for a suspended user with a 403
+/// whose whole body is `account_suspended`.
+pub(crate) fn is_account_suspended(status: reqwest::StatusCode, body: &[u8]) -> bool {
+    status == reqwest::StatusCode::FORBIDDEN && body.trim_ascii() == b"account_suspended"
 }
 
 fn body_snippet(bytes: &[u8]) -> String {
