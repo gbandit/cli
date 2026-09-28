@@ -360,7 +360,6 @@ async fn cli_access_token(credentials: &StoredCredentials) -> Result<String> {
         .post(format!("{}/api/cli/token", credentials.auth_origin))
         .json(&serde_json::json!({
             "session_token": credentials.session_token,
-            "audience": "platform-api",
         }))
         .send()
         .await
