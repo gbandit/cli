@@ -58,6 +58,8 @@ pub(crate) enum Command {
         #[arg(long)]
         confirm_database_removal: bool,
         /// Return after starting the deployment instead of waiting for completion.
+        /// An auto-commit is then kept but not pushed; the next deploy that
+        /// succeeds pushes it.
         #[arg(long)]
         detach: bool,
         /// Emit stable machine-readable JSON on stdout.

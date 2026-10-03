@@ -85,9 +85,22 @@ pub(crate) fn scaffold_project(printer: &Printer, opts: ScaffoldOptions<'_>) -> 
         printer.progress("Initialising git repo with initial commit...");
         run_git_in(opts.target, &["init", "-b", "main"])?;
         run_git_in(opts.target, &["add", "-A"])?;
+        // The template is ours, not the user's work. Authoring it as gbandit
+        // also means scaffolding works on a machine with no git identity and
+        // never asks for the user's signing key.
         run_git_in(
             opts.target,
-            &["commit", "-m", "Initial commit from gbandit-game template"],
+            &[
+                "-c",
+                "user.name=gbandit",
+                "-c",
+                "user.email=noreply@gbandit.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                "Initial commit from gbandit-game template",
+            ],
         )?;
     }
 

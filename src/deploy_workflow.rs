@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::fs;
 use std::io::IsTerminal;
 
@@ -8,7 +9,7 @@ use crate::config::ProjectConfig;
 use crate::deploy_archive::build_project_archive;
 use crate::git;
 use crate::http::ApiError;
-use crate::pipeline_watch::watch_pipeline;
+use crate::pipeline_watch::{RunFailed, watch_pipeline};
 use crate::platform_client::{DeployPipeline, PlatformClient};
 use crate::printer::Printer;
 use crate::scaffold::title_from_slug;
@@ -32,15 +33,38 @@ struct PreparedDeploy {
     archive_bytes: Vec<u8>,
     commit_sha: Option<String>,
     deploy_message: Option<String>,
+    /// The auto-commit this deploy made, taken back off if the deploy fails.
+    auto_commit: Option<git::MadeCommit>,
+}
+
+/// How an attempt that did not fail ended.
+enum Attempt {
+    Succeeded,
+    Detached,
+    BaselineSkipped,
+}
+
+/// What the deploy is known to have done, which decides what happens to its
+/// commit.
+enum Outcome {
+    Deployed,
+    NotDeployed,
+    /// A run was started but its end was not seen (`--detach`, or the event
+    /// stream was lost).
+    Unknown,
 }
 
 pub(crate) struct DeployWorkflow<'a> {
     printer: &'a Printer,
+    run_started: Cell<bool>,
 }
 
 impl<'a> DeployWorkflow<'a> {
     pub(crate) fn new(printer: &'a Printer) -> Self {
-        Self { printer }
+        Self {
+            printer,
+            run_started: Cell::new(false),
+        }
     }
 
     pub(crate) async fn deploy(&self, config: &ProjectConfig, args: &DeployArgs) -> Result<()> {
@@ -98,10 +122,22 @@ impl<'a> DeployWorkflow<'a> {
             result = self.deploy_attempt(&prepared, config, args, true).await;
         }
 
+        let outcome = match &result {
+            Ok(Attempt::Succeeded) => Outcome::Deployed,
+            Ok(Attempt::BaselineSkipped) => Outcome::NotDeployed,
+            Ok(Attempt::Detached) => Outcome::Unknown,
+            Err(err) if err.downcast_ref::<RunFailed>().is_some() => Outcome::NotDeployed,
+            Err(_) if self.run_started.get() => Outcome::Unknown,
+            Err(_) => Outcome::NotDeployed,
+        };
+        if let Err(err) = self.settle_commit(&prepared, config, &outcome) {
+            self.printer.progress(format!("{err:#}"));
+        }
+
         // A CLI-created guest has no browser cookie, so the platform would
         // show them nothing — print a one-time signed-in link to their project
         // after the first successful deploy.
-        if result.is_ok() && !args.json && !args.detach {
+        if matches!(outcome, Outcome::Deployed) && !args.json {
             let redirect = format!(
                 "{}/projects/{}",
                 crate::config::platform_web_origin(),
@@ -114,7 +150,55 @@ impl<'a> DeployWorkflow<'a> {
             }
         }
 
-        result
+        result.map(|_| ())
+    }
+
+    /// The deploy's commit follows its outcome: pushed once the deploy has
+    /// succeeded, taken back off when it is known not to have deployed, and
+    /// left local when the outcome is unknown, for the next deploy to push.
+    fn settle_commit(
+        &self,
+        prepared: &PreparedDeploy,
+        config: &ProjectConfig,
+        outcome: &Outcome,
+    ) -> Result<()> {
+        match outcome {
+            Outcome::Deployed => {
+                if prepared.commit_sha.is_none() {
+                    return Ok(());
+                }
+                if config.auto_commit() {
+                    push(self.printer)?;
+                } else if git::has_origin()? {
+                    self.printer.progress(
+                        "Skipping push to linked remote (auto_commit=false). Push when you want this commit on the remote.",
+                    );
+                }
+            }
+            Outcome::NotDeployed => {
+                let Some(commit) = &prepared.auto_commit else {
+                    return Ok(());
+                };
+                if git::undo_commit(commit)? {
+                    self.printer.progress(
+                        "Undid the auto-commit: your changes are back in the working tree, uncommitted.",
+                    );
+                } else {
+                    self.printer.progress(format!(
+                        "Left the auto-commit {} in place: the branch has moved past it since.",
+                        &commit.sha[..12]
+                    ));
+                }
+            }
+            Outcome::Unknown => {
+                if config.auto_commit() && prepared.commit_sha.is_some() && git::has_origin()? {
+                    self.printer.progress(
+                        "Not pushed to the linked remote yet: this deploy's outcome isn't known here. The next successful deploy pushes it.",
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     /// First-run guest intake: with no credentials at all, offer to create a
@@ -137,8 +221,8 @@ impl<'a> DeployWorkflow<'a> {
         crate::auth_session::login_guest(self.printer).await
     }
 
-    /// One-time work: project existence/title sync, auto-commit, push
-    /// gate, and archive build. Never repeated by the confirmation retry.
+    /// One-time work: project existence/title sync, archive build and
+    /// auto-commit. Never repeated by the confirmation retry.
     async fn prepare(&self, config: &ProjectConfig, args: &DeployArgs) -> Result<PreparedDeploy> {
         // Ensure the platform project exists (and its title matches
         // gbandit.jsonc) before any local side effects like the
@@ -147,23 +231,6 @@ impl<'a> DeployWorkflow<'a> {
         let client = PlatformClient::from_saved_auth().await?;
         self.ensure_project(&client, config, args.create, args.json)
             .await?;
-
-        let (commit_sha, deploy_message) =
-            prepare_commit(self.printer, config.auto_commit(), args.message.as_deref())?;
-
-        // Push gate (ADR 0005): if `origin` is configured, push must succeed
-        // before the Pipeline Run is triggered. Dirty local-dev deploys have no
-        // deploy commit, so there is nothing correct to push. With
-        // auto_commit=false the user syncs the linked remote themselves.
-        if commit_sha.is_some() {
-            if config.auto_commit() {
-                push_or_abort(self.printer)?;
-            } else if git::has_origin()? {
-                self.printer.progress(
-                    "Skipping push to linked remote (auto_commit=false). Push when you want this commit on the remote.",
-                );
-            }
-        }
 
         let timing = std::env::var("GBANDIT_TIMING").is_ok();
         let archive_started = std::time::Instant::now();
@@ -176,11 +243,16 @@ impl<'a> DeployWorkflow<'a> {
         }
         let archive_bytes = fs::read(archive.path())?;
 
+        // Committed after the archive is built, so nothing that can fail
+        // before the upload is left behind as a commit.
+        let commit = prepare_commit(self.printer, config.auto_commit(), args.message.as_deref())?;
+
         Ok(PreparedDeploy {
             client,
             archive_bytes,
-            commit_sha,
-            deploy_message,
+            commit_sha: commit.sha,
+            deploy_message: commit.deploy_message,
+            auto_commit: commit.made,
         })
     }
 
@@ -190,7 +262,7 @@ impl<'a> DeployWorkflow<'a> {
         config: &ProjectConfig,
         args: &DeployArgs,
         confirm_database_removal: bool,
-    ) -> Result<()> {
+    ) -> Result<Attempt> {
         let upload = self
             .upload(prepared, config, args, confirm_database_removal)
             .await?;
@@ -203,8 +275,9 @@ impl<'a> DeployWorkflow<'a> {
                     "Baseline deploy skipped — the project already has a succeeded deploy.",
                 );
             }
-            return Ok(());
+            return Ok(Attempt::BaselineSkipped);
         };
+        self.run_started.set(true);
 
         if args.json {
             println!("{}", serde_json::to_string(&upload)?);
@@ -216,7 +289,7 @@ impl<'a> DeployWorkflow<'a> {
         }
 
         if args.detach {
-            return Ok(());
+            return Ok(Attempt::Detached);
         }
 
         self.printer
@@ -229,7 +302,8 @@ impl<'a> DeployWorkflow<'a> {
             upload.pipeline_run_id,
             "Deploy",
         )
-        .await
+        .await?;
+        Ok(Attempt::Succeeded)
     }
 
     async fn upload(
@@ -371,56 +445,64 @@ pub(crate) fn json_error_payload(err: &anyhow::Error) -> String {
     payload.to_string()
 }
 
-/// Push gate (ADR 0005). Aborts the deploy if push fails.
-fn push_or_abort(printer: &Printer) -> Result<()> {
+/// Pushes a deployed commit to the linked remote (ADR 0005). The deploy has
+/// already happened, so a rejected push is something to fix, not a failure.
+fn push(printer: &Printer) -> Result<()> {
     if !git::has_origin()? {
         return Ok(());
     }
     printer.progress("Pushing to linked remote...");
     match git::push_main()? {
-        git::PushOutcome::Ok => {
-            printer.progress("Push succeeded.");
-            Ok(())
-        }
-        git::PushOutcome::NoRemote => Ok(()),
-        git::PushOutcome::NonFastForward { detail } => bail!(
-            "push rejected (non-fast-forward) — pull from the linked remote and retry. \
-             If you're in Pi, ask it to use the pull_remote skill. From a laptop, run `git pull --rebase`. \
-             Aborting deploy.\n\n{detail}"
-        ),
-        git::PushOutcome::Network { detail } => bail!(
-            "push failed — network unreachable. Aborting deploy so the deployed commit is on the remote.\n\n{detail}"
-        ),
-        git::PushOutcome::Auth { detail } => bail!(
-            "push failed — authentication rejected. \
+        git::PushOutcome::Ok => printer.progress("Push succeeded."),
+        git::PushOutcome::NoRemote => {}
+        git::PushOutcome::NonFastForward { detail } => printer.progress(format!(
+            "Deployed, but the push was rejected (non-fast-forward) — the linked remote has commits this repo doesn't. \
+             If you're in Pi, ask it to use the pull_remote skill. From a laptop, run `git pull --rebase` and push.\n\n{detail}"
+        )),
+        git::PushOutcome::Network { detail } => printer.progress(format!(
+            "Deployed, but the push failed — network unreachable. The next successful deploy pushes this commit too.\n\n{detail}"
+        )),
+        git::PushOutcome::Auth { detail } => printer.progress(format!(
+            "Deployed, but the push failed — authentication rejected. \
              Looks like the Deploy Key isn't installed any more (or your laptop's git credentials are wrong). \
-             Reconnect from the Settings page or fix your local credentials, then retry. \
-             Aborting deploy.\n\n{detail}"
-        ),
+             Reconnect from the Settings page or fix your local credentials; the next successful deploy pushes this commit too.\n\n{detail}"
+        )),
     }
+    Ok(())
 }
 
-/// Returns `(commit_sha, deploy_message)` for the platform. The SHA is the
-/// deploy's label in the history, nothing decides anything from it, so it is
-/// only sent when HEAD is what gets uploaded:
-/// - auto_commit=true, dirty: commit then return HEAD.
-/// - auto_commit=true, clean: return HEAD (no empty commit).
-/// - auto_commit=false, dirty: `commit_sha = None`.
-/// - auto_commit=false, clean: return HEAD; the deploy never pushes.
+/// The deploy's commit, as `prepare_commit` left it.
+struct DeployCommit {
+    /// The deploy's label in the history; nothing decides anything from it,
+    /// so it is only sent when HEAD is what gets uploaded.
+    sha: Option<String>,
+    deploy_message: Option<String>,
+    made: Option<git::MadeCommit>,
+}
+
+/// - auto_commit=true, dirty: commit, and send that commit.
+/// - auto_commit=true, clean: send HEAD (no empty commit).
+/// - auto_commit=false, dirty: no SHA, the upload is not any commit.
+/// - auto_commit=false, clean: send HEAD; the deploy never pushes.
 fn prepare_commit(
     printer: &Printer,
     auto_commit: bool,
     message: Option<&str>,
-) -> Result<(Option<String>, Option<String>)> {
+) -> Result<DeployCommit> {
     let deploy_message = message.map(str::to_string);
     let commit_message = message
         .map(str::to_string)
         .unwrap_or_else(|| "gbandit deploy".to_string());
+    let uncommitted = |deploy_message| DeployCommit {
+        sha: None,
+        deploy_message,
+        made: None,
+    };
 
     if !git::in_repo()? {
         if !auto_commit {
             printer.progress("Skipping auto-commit: not a git repository.");
-            return Ok((None, deploy_message));
+            return Ok(uncommitted(deploy_message));
         }
         bail!(
             "auto-commit requires a git repository and this directory is not one — \
@@ -434,23 +516,37 @@ fn prepare_commit(
         Err(err) => {
             if !auto_commit {
                 printer.progress(format!("Skipping auto-commit: {err}"));
-                return Ok((None, deploy_message));
+                return Ok(uncommitted(deploy_message));
             }
             return Err(err);
         }
     };
 
-    if auto_commit && !clean {
-        printer.progress("Auto-committing working tree...");
-        git::commit_all(&commit_message)?;
-    }
-
-    let sha = git::head_sha()?;
     if !auto_commit && !clean {
         printer.progress(
             "Deploying uncommitted local changes. Linked remote will not be pushed; the Gbandit Agent will not see these changes unless you commit/push/sync them.",
         );
-        return Ok((None, deploy_message));
+        return Ok(uncommitted(deploy_message));
     }
-    Ok((sha, deploy_message))
+
+    if auto_commit && !clean {
+        printer.progress("Auto-committing working tree...");
+        let identity = if git::has_identity()? {
+            None
+        } else {
+            Some(crate::auth_session::git_identity()?)
+        };
+        let made = git::commit_all(&commit_message, identity.as_ref())?;
+        return Ok(DeployCommit {
+            sha: Some(made.sha.clone()),
+            deploy_message,
+            made: Some(made),
+        });
+    }
+
+    Ok(DeployCommit {
+        sha: git::head_sha()?,
+        deploy_message,
+        made: None,
+    })
 }

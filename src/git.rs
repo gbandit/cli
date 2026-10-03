@@ -31,27 +31,90 @@ pub fn is_clean() -> Result<bool> {
         .all(|b| matches!(*b, b' ' | b'\t' | b'\n' | b'\r')))
 }
 
-/// Caller must have ensured the tree is dirty.
-pub fn commit_all(message: &str) -> Result<()> {
-    let add = Command::new("git")
-        .args(["add", "-A"])
+/// Who a commit is by when git has no identity configured.
+pub struct Identity {
+    pub name: String,
+    pub email: String,
+}
+
+/// True when git can name an author for a commit (`user.name`/`user.email`,
+/// or whatever git manages to derive from the system).
+pub fn has_identity() -> Result<bool> {
+    let output = Command::new("git")
+        .args(["var", "GIT_AUTHOR_IDENT"])
         .output()
-        .context("failed to run `git add -A`")?;
-    if !add.status.success() {
+        .context("failed to run `git var GIT_AUTHOR_IDENT`")?;
+    Ok(output.status.success())
+}
+
+/// A commit made by `commit_all`, with what it takes to undo it.
+pub struct MadeCommit {
+    pub sha: String,
+    parent: Option<String>,
+}
+
+/// Stages everything and commits it, as `identity` when given. Caller must
+/// have ensured the tree is dirty.
+pub fn commit_all(message: &str, identity: Option<&Identity>) -> Result<MadeCommit> {
+    let parent = head_sha()?;
+    run(&["add", "-A"])?;
+
+    let mut commit = Command::new("git");
+    commit.args(["commit", "-q", "-m", message]);
+    if let Some(identity) = identity {
+        commit
+            .env("GIT_AUTHOR_NAME", &identity.name)
+            .env("GIT_AUTHOR_EMAIL", &identity.email)
+            .env("GIT_COMMITTER_NAME", &identity.name)
+            .env("GIT_COMMITTER_EMAIL", &identity.email);
+    }
+    let output = commit.output().context("failed to run `git commit`")?;
+    if !output.status.success() {
         bail!(
-            "`git add -A` failed: {}",
-            String::from_utf8_lossy(&add.stderr).trim()
+            "`git commit` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
         );
     }
 
-    let commit = Command::new("git")
-        .args(["commit", "-m", message])
+    let sha = head_sha()?.context("HEAD is unborn right after `git commit`")?;
+    Ok(MadeCommit { sha, parent })
+}
+
+/// Takes `commit` back off the branch and leaves its changes in the working
+/// tree, unstaged. Does nothing and returns false when HEAD has moved past it
+/// since, so a commit someone made in the meantime is never rewritten.
+pub fn undo_commit(commit: &MadeCommit) -> Result<bool> {
+    // update-ref with the expected old value is a compare-and-swap: it fails
+    // instead of moving a branch someone else just moved.
+    let moved = match &commit.parent {
+        Some(parent) => Command::new("git")
+            .args(["update-ref", "HEAD", parent, &commit.sha])
+            .output(),
+        None => Command::new("git")
+            .args(["update-ref", "-d", "HEAD", &commit.sha])
+            .output(),
+    }
+    .context("failed to run `git update-ref`")?;
+    if !moved.status.success() {
+        return Ok(false);
+    }
+    match &commit.parent {
+        Some(_) => run(&["reset", "-q"])?,
+        None => run(&["read-tree", "--empty"])?,
+    }
+    Ok(true)
+}
+
+fn run(args: &[&str]) -> Result<()> {
+    let output = Command::new("git")
+        .args(args)
         .output()
-        .context("failed to run `git commit`")?;
-    if !commit.status.success() {
+        .with_context(|| format!("failed to run `git {}`", args.join(" ")))?;
+    if !output.status.success() {
         bail!(
-            "`git commit` failed: {}",
-            String::from_utf8_lossy(&commit.stderr).trim()
+            "`git {}` failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
         );
     }
     Ok(())
@@ -78,12 +141,12 @@ pub fn head_sha() -> Result<Option<String>> {
     }
 }
 
-/// Outcome of the push-or-abort gate inside `gbandit deploy` (ADR 0005).
-/// No origin → `NoRemote` (deploy proceeds without push); otherwise push
-/// and categorise so the CLI can show a useful next-step message.
+/// Outcome of the push that follows a successful `gbandit deploy` (ADR 0005).
+/// No origin → `NoRemote`; otherwise push and categorise so the CLI can show
+/// a useful next-step message.
 pub enum PushOutcome {
     Ok,
-    /// No `origin` configured — Project not linked. Deploy proceeds.
+    /// No `origin` configured — Project not linked.
     NoRemote,
     /// Remote moved forward; user should pull/rebase and retry.
     NonFastForward {
@@ -107,8 +170,7 @@ pub fn has_origin() -> Result<bool> {
     Ok(output.status.success() && !output.stdout.is_empty())
 }
 
-/// Push HEAD to `origin/main`, categorising the outcome. Gates Pipeline Runs
-/// when the project has a Linked Remote configured.
+/// Push HEAD to `origin/main`, categorising the outcome.
 pub fn push_main() -> Result<PushOutcome> {
     if !has_origin()? {
         return Ok(PushOutcome::NoRemote);

@@ -282,6 +282,17 @@ pub(crate) async fn first_deploy_handoff_link(redirect: &str) -> Option<String> 
     Some(handoff.url)
 }
 
+/// The git identity for a deploy's auto-commit when git has none configured:
+/// the gbandit account's name and a noreply address, so a repo pushed to a
+/// public remote never carries the account's real email.
+pub(crate) fn git_identity() -> Result<crate::git::Identity> {
+    let credentials = load_credentials()?;
+    Ok(crate::git::Identity {
+        name: credentials.name.unwrap_or_else(|| "gbandit".to_string()),
+        email: format!("{}@users.noreply.gbandit.com", credentials.user_id),
+    })
+}
+
 pub(crate) async fn whoami(printer: &Printer) -> Result<()> {
     let credentials = load_credentials()?;
     let display_name = credentials

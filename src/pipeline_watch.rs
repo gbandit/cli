@@ -339,7 +339,7 @@ fn handle_sse_event(
                             .detail
                             .clone()
                             .unwrap_or_else(|| format!("{} failed", label.to_lowercase()));
-                        return Ok(Some(Err(anyhow::anyhow!("{}", summary))));
+                        return Ok(Some(Err(RunFailed(summary).into())));
                     }
                     "cancelled" => {
                         let reason = delta
@@ -347,11 +347,11 @@ fn handle_sse_event(
                             .detail
                             .clone()
                             .unwrap_or_else(|| "cancelled".into());
-                        return Ok(Some(Err(anyhow::anyhow!(
-                            "{} cancelled: {}",
-                            label.to_lowercase(),
-                            reason
-                        ))));
+                        return Ok(Some(Err(RunFailed(format!(
+                            "{} cancelled: {reason}",
+                            label.to_lowercase()
+                        ))
+                        .into())));
                     }
                     _ => {}
                 }
@@ -402,6 +402,19 @@ fn dump_failed_stage(
     let _ = created_at;
 }
 
+/// The run reached a terminal state other than `succeeded`. Distinct from the
+/// other errors of a watch, which leave the run's outcome unknown.
+#[derive(Debug)]
+pub(crate) struct RunFailed(String);
+
+impl std::fmt::Display for RunFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for RunFailed {}
+
 fn finish_terminal(
     printer: &Printer,
     status: &str,
@@ -412,10 +425,10 @@ fn finish_terminal(
         printer.progress(format!("{label} succeeded."));
         Ok(())
     } else {
-        bail!(
-            "{}",
-            error_summary.unwrap_or_else(|| format!("{} {status}", label.to_lowercase()))
+        Err(RunFailed(
+            error_summary.unwrap_or_else(|| format!("{} {status}", label.to_lowercase())),
         )
+        .into())
     }
 }
 
