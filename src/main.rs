@@ -4,6 +4,7 @@ mod commands;
 mod config;
 mod deploy_archive;
 mod deploy_workflow;
+mod game_profile_command;
 mod git;
 mod http;
 mod pipeline_watch;

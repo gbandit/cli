@@ -6,6 +6,7 @@ use crate::auth_session;
 use crate::cli::{Command, EnvAction, LogTarget, ProjectAction};
 use crate::config::{load_project_config, resolve_project};
 use crate::deploy_workflow::{DeployArgs, DeployWorkflow};
+use crate::game_profile_command::{self, ProjectTarget};
 use crate::platform_client::{PlatformClient, ProjectDeleteOutcome};
 use crate::printer::Printer;
 use crate::promote_workflow::{PromoteArgs, promote};
@@ -67,13 +68,13 @@ pub(crate) async fn run(command: Command, printer: &Printer) -> Result<()> {
             detach,
             json,
         } => {
-            let project = resolve_project(project)?;
+            let target = ProjectTarget::resolve(project)?;
             let args = PromoteArgs {
                 confirm_database_removal,
                 detach,
                 json,
             };
-            promote(printer, &project, &args).await
+            promote(printer, &target, &args).await
         }
         Command::Logs {
             environment,
@@ -109,6 +110,19 @@ pub(crate) async fn run(command: Command, printer: &Printer) -> Result<()> {
             }
         },
         Command::Project { action } => match action {
+            ProjectAction::Show { project, json } => {
+                game_profile_command::show(printer, &ProjectTarget::resolve(project)?, json).await
+            }
+            ProjectAction::Cover { image, project } => {
+                game_profile_command::cover(printer, &ProjectTarget::resolve(project)?, &image)
+                    .await
+            }
+            ProjectAction::Publish { project } => {
+                game_profile_command::publish(printer, &ProjectTarget::resolve(project)?).await
+            }
+            ProjectAction::Unpublish { project } => {
+                game_profile_command::unpublish(printer, &ProjectTarget::resolve(project)?).await
+            }
             ProjectAction::Delete { slug, yes } => project_delete(printer, &slug, yes).await,
         },
         Command::Scaffold {

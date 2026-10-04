@@ -493,7 +493,12 @@ mod tests {
         });
         assert_eq!(
             stage_names(snapshot),
-            ["frontend_build", "frontend_publish", "backend_build", "backend_deploy"]
+            [
+                "frontend_build",
+                "frontend_publish",
+                "backend_build",
+                "backend_deploy"
+            ]
         );
     }
 

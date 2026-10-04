@@ -129,6 +129,34 @@ pub(crate) enum Command {
 
 #[derive(Subcommand)]
 pub(crate) enum ProjectAction {
+    /// Show the game profile: title, cover image, whether the game is
+    /// published to the game catalog, and where it is played.
+    Show {
+        #[arg(long)]
+        project: Option<String>,
+        /// Emit stable machine-readable JSON on stdout.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Upload the game's cover image (PNG, JPEG or WebP). It is cropped to
+    /// 16:9 and shown in the game catalog.
+    Cover {
+        /// Path to the image file.
+        image: std::path::PathBuf,
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// List the game in the game catalog. Needs a cover image and a game
+    /// promoted to prod.
+    Publish {
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Take the game out of the game catalog. The game itself keeps running.
+    Unpublish {
+        #[arg(long)]
+        project: Option<String>,
+    },
     /// Delete a project entirely. No undo. Project-member and human-only.
     Delete {
         /// Project slug to delete.

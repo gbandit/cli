@@ -3,6 +3,7 @@ use std::io::IsTerminal;
 use anyhow::Result;
 
 use crate::deploy_workflow::{confirm_database_removal_prompt, json_error_payload};
+use crate::game_profile_command::{ProjectTarget, fetch_project, publish_hint};
 use crate::http::ApiError;
 use crate::pipeline_watch::watch_pipeline;
 use crate::platform_client::{PlatformClient, PromotionStarted};
@@ -18,8 +19,12 @@ pub(crate) struct PromoteArgs {
 /// nothing on its own, a snapshot is taken first and a promotion is
 /// reversible by promoting again. The one prompt it can raise is the same one
 /// a deploy has, because removing a database is not reversible.
-pub(crate) async fn promote(printer: &Printer, project: &str, args: &PromoteArgs) -> Result<()> {
-    let result = promote_inner(printer, project, args).await;
+pub(crate) async fn promote(
+    printer: &Printer,
+    target: &ProjectTarget,
+    args: &PromoteArgs,
+) -> Result<()> {
+    let result = promote_inner(printer, target, args).await;
     if args.json
         && let Err(err) = &result
     {
@@ -28,7 +33,12 @@ pub(crate) async fn promote(printer: &Printer, project: &str, args: &PromoteArgs
     result
 }
 
-async fn promote_inner(printer: &Printer, project: &str, args: &PromoteArgs) -> Result<()> {
+async fn promote_inner(
+    printer: &Printer,
+    target: &ProjectTarget,
+    args: &PromoteArgs,
+) -> Result<()> {
+    let project = target.slug.as_str();
     let client = PlatformClient::from_saved_auth().await?;
     let mut result = client
         .start_promotion(project, args.confirm_database_removal)
@@ -74,7 +84,12 @@ async fn promote_inner(printer: &Printer, project: &str, args: &PromoteArgs) -> 
         started.pipeline_run_id,
         "Promotion",
     )
-    .await
+    .await?;
+
+    if let Some(hint) = publish_hint(&fetch_project(&client, project).await?, target) {
+        printer.progress(hint);
+    }
+    Ok(())
 }
 
 /// "prod runs abc1234, promoting to def5678": what prod serves now and what

@@ -273,6 +273,62 @@ impl PlatformClient {
         Ok(())
     }
 
+    pub(crate) async fn upload_cover_image(
+        &self,
+        slug: &str,
+        file_name: String,
+        bytes: Vec<u8>,
+    ) -> Result<GameProfile> {
+        let form = Form::new().part(
+            "file",
+            reqwest::multipart::Part::bytes(bytes).file_name(file_name),
+        );
+        let response = self
+            .http
+            .put(format!(
+                "{}/projects/{slug}/game-profile/cover-image",
+                self.origin
+            ))
+            .bearer_auth(&self.token)
+            .multipart(form)
+            .send()
+            .await
+            .context("failed to upload cover image")?;
+        parse_json(response)
+            .await
+            .with_context(|| format!("failed to set the cover image of project '{slug}'"))
+    }
+
+    pub(crate) async fn publish_game(&self, slug: &str) -> Result<GameProfile> {
+        let response = self
+            .http
+            .put(self.publication_url(slug))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("failed to publish game")?;
+        parse_json(response)
+            .await
+            .with_context(|| format!("failed to publish project '{slug}'"))
+    }
+
+    pub(crate) async fn unpublish_game(&self, slug: &str) -> Result<GameProfile> {
+        let response = self
+            .http
+            .delete(self.publication_url(slug))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("failed to unpublish game")?;
+        parse_json(response)
+            .await
+            .with_context(|| format!("failed to unpublish project '{slug}'"))
+    }
+
+    fn publication_url(&self, slug: &str) -> String {
+        format!("{}/projects/{slug}/game-profile/publication", self.origin)
+    }
+
     pub(crate) async fn create_project(&self, slug: &str, title: &str) -> Result<CreatedProject> {
         let response = self
             .http
@@ -358,9 +414,20 @@ pub(crate) struct CreatedProject {
     pub(crate) slug: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct ProjectSummary {
+    pub(crate) slug: String,
     pub(crate) title: String,
+    pub(crate) cover_image_url: Option<String>,
+    /// Set while the game is listed in the Game Catalog.
+    pub(crate) published_at: Option<String>,
+    pub(crate) play_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct GameProfile {
+    pub(crate) title: String,
+    pub(crate) cover_image_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
