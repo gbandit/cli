@@ -16,9 +16,11 @@ use crate::scaffold_command;
 
 pub(crate) async fn run(command: Command, printer: &Printer) -> Result<()> {
     match command {
-        Command::Login { guest } => {
+        Command::Login { guest, poll } => {
             if guest {
                 auth_session::login_guest(printer).await
+            } else if poll {
+                auth_session::login_poll(printer).await
             } else {
                 auth_session::login(printer).await
             }

@@ -134,18 +134,17 @@ impl<'a> DeployWorkflow<'a> {
             self.printer.progress(format!("{err:#}"));
         }
 
-        // A CLI-created guest has no browser cookie, so the platform would
-        // show them nothing — print a one-time signed-in link to their project
-        // after the first successful deploy.
-        if matches!(outcome, Outcome::Deployed) && !args.json {
+        // A guest's game is live but belongs to nobody who can sign in to the
+        // platform. The claim link is how it gets into a Google account.
+        if matches!(outcome, Outcome::Deployed) {
             let redirect = format!(
                 "{}/projects/{}",
                 crate::config::platform_web_origin(),
                 config.project
             );
-            if let Some(url) = crate::auth_session::first_deploy_handoff_link(&redirect).await {
+            if let Some(url) = crate::auth_session::claim_link(&redirect).await {
                 self.printer.progress(format!(
-                    "View your project in the browser (one-time sign-in link, valid 10 minutes): {url}"
+                    "To keep this game, open this link and sign in with Google: {url}"
                 ));
             }
         }
@@ -210,7 +209,7 @@ impl<'a> DeployWorkflow<'a> {
         }
         if args.json || !std::io::stdin().is_terminal() {
             bail!(
-                "You are not logged in. Run `gbandit login` to sign in with Google, or `gbandit login --guest` to create a guest account."
+                "You are not logged in. Run `gbandit login --guest` to deploy a frontend-only game without an account, or `gbandit login` to sign in with Google."
             );
         }
         if !crate::printer::confirm_yes("No account found. Continue as guest? [Y/n] ")? {

@@ -15,11 +15,18 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand)]
 pub(crate) enum Command {
+    /// Sign in with Google by approving the login in a browser. Without a
+    /// terminal it prints the link and returns instead of waiting, and the
+    /// next command picks up the login once it is approved.
     Login {
-        /// Create a guest account without a browser. Scriptable; upgrade to
-        /// Google later with a plain `gbandit login`.
-        #[arg(long)]
+        /// Create a guest account without a browser. Scriptable; link Google
+        /// later with a plain `gbandit login`.
+        #[arg(long, conflicts_with = "poll")]
         guest: bool,
+        /// Check on a login that is waiting for approval. Fails while it is
+        /// still waiting.
+        #[arg(long)]
+        poll: bool,
     },
     Whoami,
     /// Update the gbandit CLI from GitHub releases.
