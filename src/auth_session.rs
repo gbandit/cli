@@ -8,7 +8,7 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{auth_origin, platform_api_origin};
-use crate::http::{http_client, parse_error, parse_json};
+use crate::http::{ApiError, http_client, parse_error, parse_json, problem_types};
 use crate::printer::Printer;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -237,9 +237,10 @@ async fn start_device_login(
     })
 }
 
-/// One poll of the token endpoint, whose errors are RFC 8628 §3.5's. An
-/// approved login replaces the stored credentials, and every final answer
-/// forgets the request.
+/// One poll of the token endpoint, which answers a login that is not
+/// approved yet with a problem named after RFC 8628 §3.5's errors. An approved
+/// login replaces the stored credentials, and every final answer forgets the
+/// request.
 async fn check(pending: &PendingLogin) -> Result<Checked> {
     let response = http_client()
         .post(format!("{}/api/cli/login/poll", pending.auth_origin))
@@ -252,22 +253,19 @@ async fn check(pending: &PendingLogin) -> Result<Checked> {
                 pending.auth_origin
             )
         })?;
-    let checked = if response.status() == StatusCode::BAD_REQUEST {
-        #[derive(Deserialize)]
-        struct DeviceError {
-            error: String,
-        }
-        let error: DeviceError = response
-            .json()
-            .await
-            .context("auth server answered the poll with an unreadable error")?;
-        match error.error.as_str() {
-            "authorization_pending" => return Ok(Checked::Pending),
-            "access_denied" => Checked::Denied,
-            _ => Checked::Expired,
-        }
-    } else {
+    let checked = if response.status().is_success() {
         Checked::SignedIn(save_approved_login(pending, parse_json(response).await?)?)
+    } else {
+        let error = parse_error(response).await;
+        if error.is(problem_types::AUTHORIZATION_PENDING) {
+            return Ok(Checked::Pending);
+        } else if error.is(problem_types::ACCESS_DENIED) {
+            Checked::Denied
+        } else if error.is(problem_types::EXPIRED_TOKEN) || error.is(problem_types::INVALID_GRANT) {
+            Checked::Expired
+        } else {
+            return Err(error).context("the auth server refused the login poll");
+        }
     };
     clear_pending()?;
     Ok(checked)
@@ -433,7 +431,7 @@ pub(crate) async fn whoami(printer: &Printer) -> Result<()> {
     ));
 
     match cli_access_token(&credentials).await {
-        Ok(Some(_)) => printer.progress("  Session is valid."),
+        Ok(Ok(_)) => printer.progress("  Session is valid."),
         _ => printer
             .progress("  Session is expired or invalid. Run `gbandit login` to re-authenticate."),
     }
@@ -492,8 +490,11 @@ pub(crate) async fn logout(printer: &Printer) -> Result<()> {
     Ok(())
 }
 
-/// `None` when the stored session no longer authenticates.
-async fn cli_access_token(credentials: &StoredCredentials) -> Result<Option<String>> {
+/// The auth service's refusal when the stored session no longer
+/// authenticates.
+async fn cli_access_token(
+    credentials: &StoredCredentials,
+) -> Result<std::result::Result<String, ApiError>> {
     let client = http_client();
     let response = client
         .post(format!("{}/api/cli/token", credentials.auth_origin))
@@ -504,10 +505,10 @@ async fn cli_access_token(credentials: &StoredCredentials) -> Result<Option<Stri
         .await
         .context("failed to mint platform access token")?;
     if response.status() == StatusCode::UNAUTHORIZED {
-        return Ok(None);
+        return Ok(Err(parse_error(response).await));
     }
     let token: AccessTokenResponse = parse_json(response).await?;
-    Ok(Some(token.access_token))
+    Ok(Ok(token.access_token))
 }
 
 fn session_rejected_message(credentials: &StoredCredentials) -> String {
@@ -515,12 +516,9 @@ fn session_rejected_message(credentials: &StoredCredentials) -> String {
         .map(|expiry| expiry.with_timezone(&chrono::Utc) <= chrono::Utc::now())
         .unwrap_or(false);
     if expired {
-        format!(
-            "Session expired at {}. Run `gbandit login` to re-authenticate.",
-            credentials.session_expires_at
-        )
+        format!("Session expired at {}", credentials.session_expires_at)
     } else {
-        "Session is no longer valid. Run `gbandit login` to re-authenticate.".to_string()
+        "Session is no longer valid".to_string()
     }
 }
 
@@ -544,14 +542,19 @@ pub(crate) async fn load_auth() -> Result<CliAuth> {
     }
     let mut credentials = load_credentials()?;
     let mut token = cli_access_token(&credentials).await?;
-    if token.is_none() && pending == Some(LoginKind::Claim) && collect_pending_login().await {
+    if token.is_err() && pending == Some(LoginKind::Claim) && collect_pending_login().await {
         credentials = load_credentials()?;
         token = cli_access_token(&credentials).await?;
     }
-    // The 401 body is unhelpful ("401 Unauthorized: request failed"), so say
-    // whether the session expired and point at `gbandit login`.
-    let Some(token) = token else {
-        bail!(session_rejected_message(&credentials));
+    // The server's detail cannot say whether the session expired, so the
+    // problem keeps its type and request id but says that instead; its
+    // Display adds the `gbandit login` hint every 401 gets.
+    let token = match token {
+        Ok(token) => token,
+        Err(mut error) => {
+            error.detail = Some(session_rejected_message(&credentials));
+            return Err(error.into());
+        }
     };
     Ok(CliAuth {
         token,
@@ -584,16 +587,9 @@ async fn workload_access_token(token_file: &Path) -> Result<String> {
         .send()
         .await
         .context("failed to exchange workload identity for an access token")?;
-    // auth-service answers plain text, not the platform's JSON error shape.
-    if !response.status().is_success() {
-        let status = response.status();
-        let detail = response.text().await.unwrap_or_default();
-        if crate::http::is_account_suspended(status, detail.as_bytes()) {
-            bail!(crate::http::ACCOUNT_SUSPENDED_MESSAGE);
-        }
-        bail!("auth-service refused this pod's workload identity ({status}): {detail}");
-    }
-    let tokens: AgentTokensResponse = parse_json(response).await?;
+    let tokens: AgentTokensResponse = parse_json(response)
+        .await
+        .context("auth-service refused this pod's workload identity")?;
     Ok(tokens.cli_token.access_token)
 }
 

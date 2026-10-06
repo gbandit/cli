@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use crate::deploy_workflow::{confirm_database_removal_prompt, json_error_payload};
 use crate::game_profile_command::{ProjectTarget, fetch_project, publish_hint};
-use crate::http::ApiError;
+use crate::http::{ApiError, problem_types};
 use crate::pipeline_watch::watch_pipeline;
 use crate::platform_client::{PlatformClient, PromotionStarted};
 use crate::printer::Printer;
@@ -49,9 +49,9 @@ async fn promote_inner(
         && std::io::stdin().is_terminal()
         && let Err(err) = &result
         && let Some(api) = err.downcast_ref::<ApiError>()
-        && api.has_code("database_removal_requires_confirmation")
+        && api.is(problem_types::DATABASE_REMOVAL_REQUIRES_CONFIRMATION)
     {
-        printer.progress(&api.error);
+        printer.progress(api.message());
         confirm_database_removal_prompt(project)?;
         result = client.start_promotion(project, true).await;
     }

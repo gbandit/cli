@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
-use crate::http::parse_error;
+use crate::http::{ApiError, parse_error};
 use crate::printer::Printer;
 
 #[derive(Debug, Deserialize, Clone)]
@@ -142,8 +142,9 @@ pub(crate) async fn watch_pipeline(
 
 /// One connection attempt. Reads SSE events, updating `buffers` and
 /// `last_event_id`, until either the pipeline reaches a terminal state
-/// (`Terminal`) or the connection drops (`Disconnected`). A non-success HTTP
-/// status (gone, unauthorized) is a hard error, not a reconnectable drop.
+/// (`Terminal`) or the connection drops (`Disconnected`). A refusal (gone,
+/// unauthorized) is a hard error; only one the platform marks retryable counts
+/// as a reconnectable drop.
 #[allow(clippy::too_many_arguments)]
 async fn stream_once(
     printer: &Printer,
@@ -174,11 +175,12 @@ async fn stream_once(
         Err(_) => return Ok(StreamOutcome::Disconnected),
     };
     if !response.status().is_success() {
-        bail!(
-            "failed to follow {} progress: {}",
-            label.to_lowercase(),
-            parse_error(response).await
-        );
+        let error = parse_error(response).await;
+        if error.retryable {
+            return Ok(StreamOutcome::Disconnected);
+        }
+        return Err(error)
+            .with_context(|| format!("failed to follow {} progress", label.to_lowercase()));
     }
 
     let mut buf = String::new();
@@ -201,13 +203,14 @@ async fn stream_once(
                 &raw_event,
                 label,
             )? {
-                return Ok(StreamOutcome::Terminal(outcome));
+                return Ok(outcome);
             }
         }
     }
 }
 
-/// `Some(result)` when the run reaches a terminal state.
+/// `Some` when this event ends the connection: the run reached a terminal
+/// state, or the platform failed the stream in a way a reconnect can get past.
 fn handle_sse_event(
     printer: &Printer,
     buffers: &mut StageLogBuffer,
@@ -215,7 +218,7 @@ fn handle_sse_event(
     last_event_id: &mut Option<i64>,
     raw: &str,
     label: &str,
-) -> Result<Option<Result<()>>> {
+) -> Result<Option<StreamOutcome>> {
     let mut event_type = String::new();
     let mut data_lines: Vec<&str> = Vec::new();
     for line in raw.lines() {
@@ -256,13 +259,28 @@ fn handle_sse_event(
             }
             printer.status("pipeline", None, "status", Some(&snap.status));
             if is_terminal_status(&snap.status) {
-                return Ok(Some(finish_terminal(
+                return Ok(Some(StreamOutcome::Terminal(finish_terminal(
                     printer,
                     &snap.status,
                     snap.error_summary,
                     label,
-                )));
+                ))));
             }
+        }
+        // The platform failed mid-stream and says so with a Problem, then
+        // closes the stream.
+        "error" => {
+            let error: ApiError = serde_json::from_str(&data).with_context(|| {
+                format!(
+                    "the {} event stream failed with an error the CLI could not read: {data}",
+                    label.to_lowercase()
+                )
+            })?;
+            if error.retryable {
+                return Ok(Some(StreamOutcome::Disconnected));
+            }
+            return Err(error)
+                .with_context(|| format!("failed to follow {} progress", label.to_lowercase()));
         }
         "" | "pipeline_event" => {
             let delta: PipelineStreamDelta = match serde_json::from_str(&data) {
@@ -331,7 +349,7 @@ fn handle_sse_event(
                 match delta.event.kind.as_str() {
                     "succeeded" => {
                         printer.progress(format!("{label} succeeded."));
-                        return Ok(Some(Ok(())));
+                        return Ok(Some(StreamOutcome::Terminal(Ok(()))));
                     }
                     "failed" => {
                         let summary = delta
@@ -339,7 +357,7 @@ fn handle_sse_event(
                             .detail
                             .clone()
                             .unwrap_or_else(|| format!("{} failed", label.to_lowercase()));
-                        return Ok(Some(Err(RunFailed(summary).into())));
+                        return Ok(Some(StreamOutcome::Terminal(Err(RunFailed(summary).into()))));
                     }
                     "cancelled" => {
                         let reason = delta
@@ -347,11 +365,11 @@ fn handle_sse_event(
                             .detail
                             .clone()
                             .unwrap_or_else(|| "cancelled".into());
-                        return Ok(Some(Err(RunFailed(format!(
+                        return Ok(Some(StreamOutcome::Terminal(Err(RunFailed(format!(
                             "{} cancelled: {reason}",
                             label.to_lowercase()
                         ))
-                        .into())));
+                        .into()))));
                     }
                     _ => {}
                 }

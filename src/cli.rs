@@ -3,7 +3,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[derive(Parser)]
 #[command(name = "gbandit", version = crate::BUILD_VERSION)]
 pub(crate) struct Cli {
-    /// Show subprocess output and per-stage status events.
+    /// Show subprocess output, per-stage status events and the full
+    /// diagnostics of a failed platform call.
     #[arg(short, long, global = true)]
     pub(crate) verbose: bool,
     /// Prefix every line with a timestamp.

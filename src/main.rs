@@ -27,6 +27,7 @@ pub(crate) const BUILD_VERSION: &str = env!("GBANDIT_BUILD_VERSION");
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    http::show_full_diagnostics(cli.verbose);
     let printer = Printer {
         verbose: cli.verbose,
         timestamps: cli.timestamps,

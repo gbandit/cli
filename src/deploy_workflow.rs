@@ -8,7 +8,7 @@ use reqwest::multipart::{Form, Part};
 use crate::config::ProjectConfig;
 use crate::deploy_archive::build_project_archive;
 use crate::git;
-use crate::http::ApiError;
+use crate::http::{ApiError, problem_types};
 use crate::pipeline_watch::{RunFailed, watch_pipeline};
 use crate::platform_client::{DeployPipeline, PlatformClient};
 use crate::printer::Printer;
@@ -86,16 +86,16 @@ impl<'a> DeployWorkflow<'a> {
             .await;
 
         // Reactive Google sign-in: guests may only deploy frontends (403
-        // google_account_required). Interactively, offer the Google login —
+        // google-account-required). Interactively, offer the Google login —
         // the auth server upgrades the guest in place so the project stays
         // owned — mint fresh credentials, and retry the same archive.
         if !args.json
             && std::io::stdin().is_terminal()
             && let Err(err) = &result
             && let Some(api) = err.downcast_ref::<ApiError>()
-            && api.has_code("google_account_required")
+            && api.is(problem_types::GOOGLE_ACCOUNT_REQUIRED)
         {
-            self.printer.progress(&api.error);
+            self.printer.progress(api.message());
             if confirm_google_login()? {
                 crate::auth_session::login(self.printer).await?;
                 prepared.client = PlatformClient::from_saved_auth().await?;
@@ -106,7 +106,7 @@ impl<'a> DeployWorkflow<'a> {
         }
 
         // Reactive confirmation: the platform rejects a deploy that drops the
-        // `database` field (409 database_removal_requires_confirmation). In an
+        // `database` field (409 database-removal-requires-confirmation). In an
         // interactive session, confirm and retry instead of making the user
         // rediscover the --confirm-database-removal flag. The retry re-uploads
         // the already-built archive — no second commit or push.
@@ -115,9 +115,9 @@ impl<'a> DeployWorkflow<'a> {
             && std::io::stdin().is_terminal()
             && let Err(err) = &result
             && let Some(api) = err.downcast_ref::<ApiError>()
-            && api.has_code("database_removal_requires_confirmation")
+            && api.is(problem_types::DATABASE_REMOVAL_REQUIRES_CONFIRMATION)
         {
-            self.printer.progress(&api.error);
+            self.printer.progress(api.message());
             confirm_database_removal_prompt(&config.project)?;
             result = self.deploy_attempt(&prepared, config, args, true).await;
         }
@@ -431,17 +431,33 @@ pub(crate) fn confirm_database_removal_prompt(project: &str) -> Result<()> {
     )
 }
 
-/// `--json` failure line for stdout: the platform's structured error payload
-/// ({error, code?, issues?}) plus status, matching the success-line shape.
+/// `--json` failure line for stdout: `{"status": "error", "error": <problem>}`,
+/// matching the success line's `status`. The problem is the platform's when it
+/// refused, with `detail` always set. A failure on this side is a problem of
+/// the same shape, `about:blank` with no `status` because no response was
+/// involved, retryable only when the platform could not be reached at all.
 pub(crate) fn json_error_payload(err: &anyhow::Error) -> String {
-    let mut payload = match err.downcast_ref::<ApiError>() {
+    let error = match err.downcast_ref::<ApiError>() {
         Some(api) => {
-            serde_json::to_value(api).unwrap_or_else(|_| serde_json::json!({ "error": api.error }))
+            let mut problem = serde_json::to_value(api).expect("problem serializes to JSON");
+            problem["detail"] = serde_json::Value::String(api.message().to_string());
+            problem
         }
-        None => serde_json::json!({ "error": format!("{err:#}") }),
+        None => {
+            let platform_unreachable = err.chain().any(|cause| {
+                cause
+                    .downcast_ref::<reqwest::Error>()
+                    .is_some_and(|error| error.is_connect() || error.is_timeout())
+            });
+            serde_json::json!({
+                "type": "about:blank",
+                "title": "gbandit CLI error",
+                "detail": format!("{err:#}"),
+                "retryable": platform_unreachable,
+            })
+        }
     };
-    payload["status"] = serde_json::Value::String("error".to_string());
-    payload.to_string()
+    serde_json::json!({ "status": "error", "error": error }).to_string()
 }
 
 /// Pushes a deployed commit to the linked remote (ADR 0005). The deploy has

@@ -69,13 +69,12 @@ impl PlatformClient {
         F: Fn() -> Result<Form>,
     {
         let url = format!("{}/projects/{}/deploys", self.origin, project);
+        let context = || format!("failed to start deploy for project '{project}'");
         let response = self
             .post_with_retry(&url, |request| Ok(request.multipart(make_form()?)))
             .await
-            .context("failed to send deploy request")?;
-        parse_json(response)
-            .await
-            .with_context(|| format!("failed to start deploy for project '{project}'"))
+            .with_context(context)?;
+        parse_json(response).await.with_context(context)
     }
 
     /// `Ok(None)` = the platform skipped the baseline deploy (200 instead of
@@ -89,21 +88,22 @@ impl PlatformClient {
         F: Fn() -> Result<Form>,
     {
         let url = format!("{}/projects/{}/deploys/baseline", self.origin, project);
+        let context = || format!("failed to start baseline deploy for project '{project}'");
         let response = self
             .post_with_retry(&url, |request| Ok(request.multipart(make_form()?)))
             .await
-            .context("failed to send baseline deploy request")?;
+            .with_context(context)?;
         if response.status() == reqwest::StatusCode::OK {
             return Ok(None);
         }
-        Ok(Some(parse_json(response).await.with_context(|| {
-            format!("failed to start baseline deploy for project '{project}'")
-        })?))
+        Ok(Some(parse_json(response).await.with_context(context)?))
     }
 
-    /// POST with three attempts over transport failures and 5xx. `body` is
-    /// applied per attempt rather than once, because a multipart body is
-    /// consumed by the attempt that sends it and has to be rebuilt.
+    /// POST with three attempts over transport failures and refusals the
+    /// platform marks retryable. A refusal comes back as its `ApiError`, so
+    /// only a success is returned as a response. `body` is applied per attempt
+    /// rather than once, because a multipart body is consumed by the attempt
+    /// that sends it and has to be rebuilt.
     ///
     /// Retrying is only safe because every caller carries an idempotency key:
     /// the platform attaches a repeat of the same SubmissionId to the run the
@@ -112,24 +112,23 @@ impl PlatformClient {
     where
         F: Fn(reqwest::RequestBuilder) -> Result<reqwest::RequestBuilder>,
     {
-        let mut last_transport_error = None;
-        for attempt in 0..3 {
+        const ATTEMPTS: u64 = 3;
+        for attempt in 1..=ATTEMPTS {
             let request = body(self.http.post(url).bearer_auth(&self.token))?;
             match request.send().await {
-                Ok(response) if response.status().is_server_error() && attempt < 2 => {
-                    tokio::time::sleep(std::time::Duration::from_millis(250 * (attempt + 1))).await;
+                Ok(response) if response.status().is_success() => return Ok(response),
+                Ok(response) => {
+                    let error = parse_error(response).await;
+                    if !error.retryable || attempt == ATTEMPTS {
+                        return Err(error.into());
+                    }
                 }
-                Ok(response) => return Ok(response),
-                Err(error) if attempt < 2 => {
-                    last_transport_error = Some(error);
-                    tokio::time::sleep(std::time::Duration::from_millis(250 * (attempt + 1))).await;
-                }
-                Err(error) => return Err(error.into()),
+                Err(error) if attempt == ATTEMPTS => return Err(error.into()),
+                Err(_) => {}
             }
+            tokio::time::sleep(std::time::Duration::from_millis(250 * attempt)).await;
         }
-        Err(last_transport_error
-            .expect("three retry attempts always retain a transport error")
-            .into())
+        unreachable!("the last attempt always returns")
     }
 
     /// Both sources come from the same store, so one call shape serves both
@@ -216,10 +215,9 @@ impl PlatformClient {
             .await
             .context("failed to delete environment variable")?;
         if !response.status().is_success() {
-            let error = parse_error(response).await;
-            bail!(
-                "failed to delete env var {key} for project '{project}' ({environment}): {error}"
-            );
+            return Err(parse_error(response).await).with_context(|| {
+                format!("failed to delete env var {key} for project '{project}' ({environment})")
+            });
         }
         Ok(())
     }
@@ -472,12 +470,11 @@ impl PlatformClient {
             "submission_id": uuid::Uuid::new_v4().to_string(),
             "confirm_database_removal": confirm_database_removal,
         });
+        let context = || format!("failed to promote project '{project}'");
         let response = self
             .post_with_retry(&url, |request| Ok(request.json(&body)))
             .await
-            .context("failed to send promote request")?;
-        parse_json(response)
-            .await
-            .with_context(|| format!("failed to promote project '{project}'"))
+            .with_context(context)?;
+        parse_json(response).await.with_context(context)
     }
 }
