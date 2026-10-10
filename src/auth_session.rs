@@ -20,6 +20,9 @@ pub(crate) struct StoredCredentials {
     user_id: String,
     email: Option<String>,
     name: Option<String>,
+    /// Only stored for a guest, whose name is just "Guest".
+    #[serde(default)]
+    username: Option<String>,
     /// A guest's deploys end with a link to claim them; an account's do not.
     is_guest: bool,
 }
@@ -114,15 +117,15 @@ pub(crate) async fn login(printer: &Printer) -> Result<()> {
     clear_pending()?;
     let pending = start_device_login(LoginKind::Login, guest_session_token, None).await?;
 
-    printer.progress("Open this URL and approve the login:");
-    printer.progress(&pending.verification_uri);
-    if webbrowser::open(&pending.verification_uri).is_ok() {
-        printer.progress("Opened browser window.");
-    }
+    printer.progress(format!(
+        "Approve the login in your browser: {}",
+        pending.verification_uri
+    ));
+    let _ = webbrowser::open(&pending.verification_uri);
     if !std::io::stdin().is_terminal() {
         save_pending(&pending)?;
         printer.progress(
-            "Once it is approved, the next gbandit command picks up the login. `gbandit login --poll` checks.",
+            "After approving, run any gbandit command (or `gbandit login --poll`) to finish.",
         );
         return Ok(());
     }
@@ -223,7 +226,7 @@ async fn start_device_login(
         .await
         .with_context(|| {
             format!(
-                "could not reach the auth server at {auth_origin} — check your network connection"
+                "could not reach the auth server at {auth_origin}; check your network connection"
             )
         })?;
     let start: DeviceAuthorizationResponse = parse_json(response).await?;
@@ -249,7 +252,7 @@ async fn check(pending: &PendingLogin) -> Result<Checked> {
         .await
         .with_context(|| {
             format!(
-                "could not reach the auth server at {} — check your network connection",
+                "could not reach the auth server at {}; check your network connection",
                 pending.auth_origin
             )
         })?;
@@ -284,6 +287,7 @@ fn save_approved_login(
         user_id: completed.user_id,
         email: completed.email,
         name: completed.name,
+        username: None,
         // Approving always goes through Google.
         is_guest: false,
     };
@@ -291,7 +295,7 @@ fn save_approved_login(
 
     let who = display_name(&credentials);
     let mut message = match pending.kind {
-        LoginKind::Claim => format!("Your game was claimed — signed in as {who}."),
+        LoginKind::Claim => format!("Your projects are now in your Google account. Logged in as {who}."),
         LoginKind::Login => format!("Logged in as {who}."),
     };
     // The browser decides which account the login completes as. A guest the
@@ -309,12 +313,15 @@ fn save_approved_login(
     Ok(message)
 }
 
-fn display_name(credentials: &StoredCredentials) -> &str {
+fn display_name(credentials: &StoredCredentials) -> String {
+    if let Some(username) = &credentials.username {
+        return format!("@{username}");
+    }
     credentials
         .email
-        .as_deref()
-        .or(credentials.name.as_deref())
-        .unwrap_or(&credentials.user_id)
+        .clone()
+        .or_else(|| credentials.name.clone())
+        .unwrap_or_else(|| credentials.user_id.clone())
 }
 
 #[derive(Debug, Deserialize)]
@@ -325,6 +332,10 @@ struct AnonymousLoginResponse {
     username: Option<String>,
     expires_at: String,
 }
+
+/// A guest never passes the sign-in page, where everyone else agrees to the
+/// terms, so the CLI points at them when it creates one.
+const TERMS_URL: &str = "https://gbandit.com/terms";
 
 /// Explicit, browserless guest creation (`gbandit login --guest`). The
 /// server auto-generates the Username; the session cookie value doubles as
@@ -345,11 +356,11 @@ pub(crate) async fn login_guest(printer: &Printer) -> Result<()> {
         .await
         .with_context(|| {
             format!(
-                "could not reach the auth server at {auth_origin} — check your network connection"
+                "could not reach the auth server at {auth_origin}; check your network connection"
             )
         })?;
     let session_token = session_cookie_value(&response).context(
-        "auth server response did not include a session cookie — is the server up to date?",
+        "the auth server's response had no session cookie; is the server up to date?",
     )?;
     let me: AnonymousLoginResponse = parse_json(response).await?;
 
@@ -361,16 +372,18 @@ pub(crate) async fn login_guest(printer: &Printer) -> Result<()> {
         user_id: me.user_id,
         email: me.email,
         name: me.name,
+        username: me.username.clone(),
         is_guest: true,
     };
     save_credentials(&credentials)?;
-    match me.username.as_deref() {
-        Some(username) => printer.progress(format!("Created guest account @{username}.")),
-        None => printer.progress("Created guest account."),
-    }
-    printer.progress(
-        "Link Google any time with `gbandit login` — your projects are kept, and so is the username if you want it.",
-    );
+    let account = match me.username.as_deref() {
+        Some(username) => format!("guest account @{username}"),
+        None => "guest account".into(),
+    };
+    printer.progress(format!(
+        "Created {account}. Using it means you agree to the terms at {TERMS_URL}."
+    ));
+    printer.progress("Run `gbandit login` any time to move your projects to a Google account.");
     Ok(())
 }
 
@@ -426,14 +439,15 @@ pub(crate) async fn whoami(printer: &Printer) -> Result<()> {
     }
     printer.progress(format!("  User ID: {}", credentials.user_id));
     printer.progress(format!(
-        "  Session expires at {}",
-        credentials.session_expires_at
+        "  Session expires {}",
+        crate::printer::readable_time(&credentials.session_expires_at)
     ));
 
     match cli_access_token(&credentials).await {
         Ok(Ok(_)) => printer.progress("  Session is valid."),
-        _ => printer
-            .progress("  Session is expired or invalid. Run `gbandit login` to re-authenticate."),
+        Ok(Err(_)) => printer
+            .progress("  Session is expired or invalid. Run `gbandit login` to log in again."),
+        Err(err) => printer.progress(format!("  Couldn't check the session: {err:#}")),
     }
     if let Some(pending) = load_pending()? {
         let what = match pending.kind {
@@ -516,7 +530,10 @@ fn session_rejected_message(credentials: &StoredCredentials) -> String {
         .map(|expiry| expiry.with_timezone(&chrono::Utc) <= chrono::Utc::now())
         .unwrap_or(false);
     if expired {
-        format!("Session expired at {}", credentials.session_expires_at)
+        format!(
+            "Session expired {}",
+            crate::printer::readable_time(&credentials.session_expires_at)
+        )
     } else {
         "Session is no longer valid".to_string()
     }
@@ -569,6 +586,10 @@ fn workload_token_file() -> Option<PathBuf> {
     std::env::var_os("GBANDIT_WORKLOAD_TOKEN_FILE")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+}
+
+pub(crate) fn runs_as_agent() -> bool {
+    workload_token_file().is_some()
 }
 
 /// auth-service asks the API server to vouch for the token, checks the agent's
@@ -670,6 +691,7 @@ fn load_credentials() -> Result<StoredCredentials> {
             user_id,
             email: None,
             name: None,
+            username: None,
             is_guest: false,
         });
     }
@@ -691,7 +713,7 @@ fn read_credentials_file(path: &Path) -> Result<StoredCredentials> {
     restrict_to_owner(path)?;
     serde_json::from_slice(&bytes).with_context(|| {
         format!(
-            "credentials file {} is unreadable — run `gbandit login` to re-authenticate",
+            "credentials file {} is unreadable; run `gbandit login` to log in again",
             path.display()
         )
     })
@@ -775,6 +797,7 @@ mod tests {
             user_id: "user-1".into(),
             email: Some("u@example.test".into()),
             name: None,
+            username: None,
             is_guest: false,
         }
     }

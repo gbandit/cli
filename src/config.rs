@@ -38,8 +38,7 @@ struct LocalDevConfig {
     /// linked remote once the deploy has succeeded. False (default): the
     /// CLI never touches git — no commits, no push; you sync the remote
     /// yourself. The default is false so deploying a pre-existing repo never
-    /// commits or pushes to someone's real remote unasked; the template opts
-    /// in explicitly.
+    /// commits or pushes to someone's real remote unasked.
     #[serde(default = "default_auto_commit")]
     auto_commit: bool,
 }
@@ -117,8 +116,7 @@ fn parse_config(text: &str) -> Result<ProjectConfig> {
         .map_err(|err| anyhow::anyhow!("failed to parse gbandit.jsonc: {err}"))?
         .context("gbandit.jsonc is empty")?;
     serde_json::from_value(value).context(
-        "failed to read gbandit.jsonc \
-         — schema: https://docs.gbandit.com/deploy#gbandit-jsonc \
+        "failed to read gbandit.jsonc; see https://docs.gbandit.com/deploy#gbandit-jsonc \
          (or run: gbandit docs deploy)",
     )
 }

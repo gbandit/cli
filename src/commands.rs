@@ -158,10 +158,10 @@ async fn docs(page: Option<&str>, full: bool) -> Result<()> {
         .send()
         .await
         .with_context(|| {
-            format!("failed to fetch {url} — check your network; the docs live at {origin}")
+            format!("failed to fetch {url}; check your network connection")
         })?;
     if response.status() == reqwest::StatusCode::NOT_FOUND {
-        bail!("no docs page at {url} — run `gbandit docs` to list available pages");
+        bail!("no docs page at {url}; run `gbandit docs` to list the pages");
     }
     let text = response
         .error_for_status()
@@ -215,7 +215,7 @@ async fn logs(
                     .user_name
                     .as_deref()
                     .unwrap_or_else(|| match entry.user_is_anon {
-                        Some(true) => "anon",
+                        Some(true) => "guest",
                         _ => "-",
                     });
                 let path = entry.source_url.as_deref().map(url_path).unwrap_or("/");
@@ -288,12 +288,11 @@ async fn project_delete(printer: &Printer, slug: &str, skip_prompt: bool) -> Res
     if !skip_prompt {
         // Friction at the presentation layer (ADR 0004 §7).
         printer.progress(format!(
-            "About to permanently delete project '{slug}', including its"
+            "About to permanently delete '{slug}': its deployments, databases, uploaded files, \
+             the agent's workspace and chats, and the Git remote connection. This cannot be undone."
         ));
-        printer.progress("deployments, databases, uploaded files, and Git remote connection.");
-        printer.progress("This cannot be undone.");
         crate::printer::confirm_typed(
-            "Type the slug to confirm: ",
+            &format!("Type the slug ({slug}) to confirm: "),
             slug,
             "aborted: typed value did not match slug",
         )?;
@@ -306,8 +305,7 @@ async fn project_delete(printer: &Printer, slug: &str, skip_prompt: bool) -> Res
             // in the UI / list endpoint until the background reconciler frees
             // the slug.
             printer.progress(format!(
-                "Deletion started for project '{slug}'. The project name remains \
-                 unavailable until deletion is complete."
+                "Deleting '{slug}'. The slug stays reserved until deletion finishes."
             ));
             Ok(())
         }

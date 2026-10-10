@@ -420,6 +420,8 @@ pub(crate) struct ProjectSummary {
     /// Set while the game is listed in the Game Catalog.
     pub(crate) published_at: Option<String>,
     pub(crate) play_url: String,
+    /// Where a deploy rolls out to.
+    pub(crate) dev_url: String,
 }
 
 #[derive(Debug, Deserialize)]

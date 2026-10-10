@@ -25,7 +25,7 @@ pub(crate) async fn run(
     let in_place = name.as_deref() == Some(".");
     let named_slug = match name {
         Some(n) if !in_place => {
-            validate_slug_input(&n).map_err(|msg| anyhow::anyhow!("invalid name: {msg}"))?;
+            validate_slug_input(&n).map_err(|msg| anyhow::anyhow!("invalid slug: {msg}"))?;
             Some(n)
         }
         _ => None,
@@ -42,8 +42,7 @@ pub(crate) async fn run(
     let availability_client = PlatformClient::from_saved_auth().await.ok();
     if availability_client.is_none() {
         printer.progress(
-            "Skipping project-name availability check (not logged in). \
-             The first `gbandit deploy` claims the name.",
+            "Not logged in, so the slug can't be checked. The first `gbandit deploy` reserves it.",
         );
     }
 
@@ -51,23 +50,26 @@ pub(crate) async fn run(
     // written only when the user provided or confirmed one. Non-interactive
     // scaffolds (the Pi Agent entrypoint) omit it so a later deploy can't
     // clobber a title set in the web UI.
-    let (slug, title) = if let Some(slug) = named_slug {
-        check_named_slug(printer, availability_client.as_ref(), &slug).await?;
+    let (slug, title, existing_title) = if let Some(slug) = named_slug {
+        let existing_title =
+            check_named_slug(printer, availability_client.as_ref(), &slug).await?;
         let title = match title {
             Some(t) => Some(t.trim().to_string()),
             None if interactive => Some(prompt_with_default(
                 &mut stdin,
                 "Project title",
-                &scaffold::title_from_slug(&slug),
+                existing_title
+                    .as_deref()
+                    .unwrap_or(&scaffold::title_from_slug(&slug)),
                 validate_title_input,
             )?),
             None => None,
         };
-        (slug, title)
+        (slug, title, existing_title)
     } else {
         if !interactive {
             bail!(
-                "a project name is required when not running interactively: `gbandit scaffold <name>`"
+                "a slug is required when not running interactively: `gbandit scaffold <slug>`"
             );
         }
         let title = match title {
@@ -81,8 +83,14 @@ pub(crate) async fn run(
             &scaffold::slugify(&title),
         )
         .await?;
-        (slug, Some(title))
+        (slug, Some(title), None)
     };
+    // The Pi Agent scaffolds a project that already exists, whose title the
+    // web UI owns: it reaches the page, but not gbandit.jsonc.
+    let page_title = title
+        .clone()
+        .or(existing_title)
+        .unwrap_or_else(|| scaffold::title_from_slug(&slug));
 
     let target_path: PathBuf = match target {
         Some(t) => PathBuf::from(t),
@@ -91,7 +99,7 @@ pub(crate) async fn run(
     };
 
     printer.progress(format!(
-        "Scaffolding '{slug}' into {} ...",
+        "Scaffolding '{slug}' into {}...",
         target_path.display()
     ));
     scaffold::scaffold_project(
@@ -101,63 +109,64 @@ pub(crate) async fn run(
             target: &target_path,
             init_git: true,
             title: title.as_deref(),
+            page_title: &page_title,
         },
     )?;
 
     if target_path == PathBuf::from(".") {
         printer.progress(
-            "Done. Run `gbandit deploy` to ship — the first deploy creates the project on the platform.",
+            "Done. Run `gbandit deploy` to ship it. The first deploy creates the project on the platform.",
         );
     } else {
         printer.progress(format!(
-            "Done. cd {} && gbandit deploy — the first deploy creates the project on the platform.",
+            "Done. Run `cd {} && gbandit deploy` to ship it. The first deploy creates the project on the platform.",
             target_path.display()
         ));
     }
     printer.progress(
-        "Tip: to also build this project with the Pi Agent in the web UI, \
-         link a git remote first from Project Settings — without one the \
-         agent starts from a fresh template and won't see your local code."
-            .to_string(),
+        "To work on this game with the Pi Agent later, link a git remote in the \
+         project's Settings after the first deploy. Without one the agent starts \
+         from a fresh template.",
     );
     Ok(())
 }
 
 /// The slug was given explicitly, so a definite "taken by someone else" is a
 /// hard error instead of wasted scaffolding. An unreachable check proceeds.
+/// The title of the project the slug already names, when it is one of yours.
 async fn check_named_slug(
     printer: &Printer,
     client: Option<&PlatformClient>,
     slug: &str,
-) -> Result<()> {
+) -> Result<Option<String>> {
     let Some(client) = client else {
-        return Ok(());
+        return Ok(None);
     };
     match client.slug_availability(slug).await {
         Ok(SlugAvailability::Free) => {
             printer.progress(format!(
-                "'{slug}' is available — the first deploy claims it."
+                "'{slug}' is available. The first deploy reserves it."
             ));
         }
         Ok(SlugAvailability::TakenByYou) => {
             printer.progress(format!(
-                "You already own project '{slug}' — deploys will target the existing project."
+                "You're already a member of '{slug}'; deploys go to that project."
             ));
+            return Ok(client.get_project(slug).await?.map(|project| project.title));
         }
         Ok(SlugAvailability::TakenByOther) => {
-            bail!("project name '{slug}' is already taken by another user — pick another name");
+            bail!("the slug '{slug}' is already taken by another user; pick another one");
         }
         Ok(SlugAvailability::Deleting) => {
-            bail!("project '{slug}' is being deleted — try again in a moment or pick another name");
+            bail!("project '{slug}' is being deleted; try again in a moment or pick another slug");
         }
         Err(err) => {
             printer.progress(format!(
-                "Skipping project-name availability check ({err}). \
-                 The first `gbandit deploy` claims the name."
+                "Couldn't check the slug ({err:#}). The first `gbandit deploy` reserves it."
             ));
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 /// Interactive slug prompt that re-prompts while the platform reports the
@@ -184,22 +193,21 @@ async fn prompt_available_slug<R: BufRead>(
             Ok(SlugAvailability::Free) => return Ok(slug),
             Ok(SlugAvailability::TakenByYou) => {
                 printer.progress(format!(
-                    "You already own project '{slug}' — deploys will target the existing project."
+                    "You're already a member of '{slug}'; deploys go to that project."
                 ));
                 return Ok(slug);
             }
             Ok(SlugAvailability::TakenByOther) => {
-                eprintln!("  '{slug}' is already taken by another user — pick another name");
+                eprintln!("  '{slug}' is already taken by another user; pick another one");
             }
             Ok(SlugAvailability::Deleting) => {
                 eprintln!(
-                    "  '{slug}' is being deleted — try again in a moment or pick another name"
+                    "  '{slug}' is being deleted; try again in a moment or pick another slug"
                 );
             }
             Err(err) => {
                 printer.progress(format!(
-                    "Skipping project-name availability check ({err}). \
-                     The first `gbandit deploy` claims the name."
+                    "Couldn't check the slug ({err:#}). The first `gbandit deploy` reserves it."
                 ));
                 return Ok(slug);
             }
@@ -276,8 +284,11 @@ fn validate_title_input(value: &str) -> Result<(), String> {
 }
 
 fn validate_slug_input(value: &str) -> Result<(), String> {
-    if value.is_empty() || value.len() > 63 {
-        return Err("slug must be 1–63 characters".to_string());
+    if value.is_empty() || value.len() > scaffold::MAX_SLUG_LEN {
+        return Err(format!(
+            "slug must be 1–{} characters",
+            scaffold::MAX_SLUG_LEN
+        ));
     }
     let bytes = value.as_bytes();
     let edge_ok = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit();

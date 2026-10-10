@@ -9,7 +9,7 @@ pub fn in_repo() -> Result<bool> {
     let output = Command::new("git")
         .args(["rev-parse", "--is-inside-work-tree"])
         .output()
-        .context("failed to run `git` — is git installed?")?;
+        .context("failed to run `git`; is git installed?")?;
     Ok(output.status.success())
 }
 
@@ -18,7 +18,7 @@ pub fn is_clean() -> Result<bool> {
     let output = Command::new("git")
         .args(["status", "--porcelain"])
         .output()
-        .context("failed to run `git status` — is git installed and is this a git repository?")?;
+        .context("failed to run `git status`; is git installed and is this a git repository?")?;
     if !output.status.success() {
         bail!(
             "`git status` failed: {}",

@@ -134,7 +134,14 @@ impl<'a> DeployWorkflow<'a> {
             self.printer.progress(format!("{err:#}"));
         }
 
-        // A guest's game is live but belongs to nobody who can sign in to the
+        if matches!(outcome, Outcome::Deployed)
+            && let Ok(Some(project)) = prepared.client.get_project(&config.project).await
+        {
+            self.printer
+                .progress(format!("Live at {}", project.dev_url));
+        }
+
+        // A guest's game is live but belongs to nobody who can log in to the
         // platform. The claim link is how it gets into a Google account.
         if matches!(outcome, Outcome::Deployed) {
             let redirect = format!(
@@ -144,7 +151,7 @@ impl<'a> DeployWorkflow<'a> {
             );
             if let Some(url) = crate::auth_session::claim_link(&redirect).await {
                 self.printer.progress(format!(
-                    "To keep this game, open this link and sign in with Google: {url}"
+                    "To keep this game, open this link and log in with Google: {url}"
                 ));
             }
         }
@@ -168,10 +175,6 @@ impl<'a> DeployWorkflow<'a> {
                 }
                 if config.auto_commit() {
                     push(self.printer)?;
-                } else if git::has_origin()? {
-                    self.printer.progress(
-                        "Skipping push to linked remote (auto_commit=false). Push when you want this commit on the remote.",
-                    );
                 }
             }
             Outcome::NotDeployed => {
@@ -209,12 +212,12 @@ impl<'a> DeployWorkflow<'a> {
         }
         if args.json || !std::io::stdin().is_terminal() {
             bail!(
-                "You are not logged in. Run `gbandit login --guest` to deploy a frontend-only game without an account, or `gbandit login` to sign in with Google."
+                "You are not logged in. Run `gbandit login --guest` to deploy a frontend-only game as a guest, or `gbandit login` to log in with Google."
             );
         }
         if !crate::printer::confirm_yes("No account found. Continue as guest? [Y/n] ")? {
             bail!(
-                "aborted: run `gbandit login` to sign in with Google, or `gbandit login --guest` for a guest account"
+                "aborted: run `gbandit login` to log in with Google, or `gbandit login --guest` for a guest account"
             );
         }
         crate::auth_session::login_guest(self.printer).await
@@ -271,7 +274,7 @@ impl<'a> DeployWorkflow<'a> {
                 println!("{}", serde_json::json!({ "status": "baseline_skipped" }));
             } else {
                 self.printer.progress(
-                    "Baseline deploy skipped — the project already has a succeeded deploy.",
+                    "Baseline deploy skipped: the project already has a successful deploy.",
                 );
             }
             return Ok(Attempt::BaselineSkipped);
@@ -401,7 +404,7 @@ impl<'a> DeployWorkflow<'a> {
 
 fn confirm_google_login() -> Result<bool> {
     crate::printer::confirm_yes(
-        "Sign in with Google now? Your guest account and its projects are kept. [Y/n] ",
+        "Log in with Google now? Your projects move to that account. [Y/n] ",
     )
 }
 
@@ -425,9 +428,9 @@ fn confirm_create(slug: &str, json: bool) -> Result<bool> {
 /// is destructive and must not happen off a reflexive "y".
 pub(crate) fn confirm_database_removal_prompt(project: &str) -> Result<()> {
     crate::printer::confirm_typed(
-        "Type the project name to confirm removing the database: ",
+        &format!("Type the slug ({project}) to confirm removing the database: "),
         project,
-        "aborted: typed value did not match the project name",
+        "aborted: typed value did not match the slug",
     )
 }
 
@@ -471,16 +474,15 @@ fn push(printer: &Printer) -> Result<()> {
         git::PushOutcome::Ok => printer.progress("Push succeeded."),
         git::PushOutcome::NoRemote => {}
         git::PushOutcome::NonFastForward { detail } => printer.progress(format!(
-            "Deployed, but the push was rejected (non-fast-forward) — the linked remote has commits this repo doesn't. \
-             If you're in Pi, ask it to use the pull_remote skill. From a laptop, run `git pull --rebase` and push.\n\n{detail}"
+            "Deployed, but the remote has commits this repo doesn't, so the push was rejected. \
+             Run `git pull --rebase` (in the Pi Agent: the pull-and-merge skill) and deploy again.\n\n{detail}"
         )),
         git::PushOutcome::Network { detail } => printer.progress(format!(
-            "Deployed, but the push failed — network unreachable. The next successful deploy pushes this commit too.\n\n{detail}"
+            "Deployed, but the push failed because the network is unreachable. The next successful deploy pushes this commit.\n\n{detail}"
         )),
         git::PushOutcome::Auth { detail } => printer.progress(format!(
-            "Deployed, but the push failed — authentication rejected. \
-             Looks like the Deploy Key isn't installed any more (or your laptop's git credentials are wrong). \
-             Reconnect from the Settings page or fix your local credentials; the next successful deploy pushes this commit too.\n\n{detail}"
+            "Deployed, but the push was refused. Reconnect the remote in the project's Settings \
+             or fix your local git credentials. The next successful deploy pushes this commit.\n\n{detail}"
         )),
     }
     Ok(())
@@ -516,11 +518,10 @@ fn prepare_commit(
 
     if !git::in_repo()? {
         if !auto_commit {
-            printer.progress("Skipping auto-commit: not a git repository.");
             return Ok(uncommitted(deploy_message));
         }
         bail!(
-            "auto-commit requires a git repository and this directory is not one — \
+            "auto-commit needs a git repository and this directory is not one; \
              run `git init`, or set local_dev.auto_commit to false in gbandit.jsonc \
              to deploy without committing"
         );
@@ -530,7 +531,6 @@ fn prepare_commit(
         Ok(value) => value,
         Err(err) => {
             if !auto_commit {
-                printer.progress(format!("Skipping auto-commit: {err}"));
                 return Ok(uncommitted(deploy_message));
             }
             return Err(err);
@@ -539,7 +539,7 @@ fn prepare_commit(
 
     if !auto_commit && !clean {
         printer.progress(
-            "Deploying uncommitted local changes. Linked remote will not be pushed; the Gbandit Agent will not see these changes unless you commit/push/sync them.",
+            "Deploying uncommitted changes. They aren't pushed, so the Pi Agent won't see them until you commit and push.",
         );
         return Ok(uncommitted(deploy_message));
     }

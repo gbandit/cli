@@ -117,9 +117,8 @@ pub(crate) async fn watch_pipeline(
                 failures += 1;
                 if failures > MAX_RECONNECTS {
                     bail!(
-                        "lost connection to the {lower} event stream after {MAX_RECONNECTS} reconnect attempts \
-                         — the {lower} may still be running on the platform. \
-                         Check the project dashboard or `gbandit logs backend` to see how it ended.",
+                        "lost connection to the {lower} event stream after {MAX_RECONNECTS} reconnect attempts; \
+                         the {lower} may still be running. Check the project's Deployments page to see how it ended.",
                         lower = label.to_lowercase(),
                     );
                 }
@@ -334,11 +333,10 @@ fn handle_sse_event(
                     }
                 }
                 "cancelled" => {
-                    let reason = delta.event.detail.as_deref().unwrap_or("");
                     printer.print_event_line(
                         &stage,
                         created_at,
-                        &format!("cancelled: {reason}"),
+                        &cancelled_line("cancelled", delta.event.detail.as_deref()),
                         true,
                     );
                 }
@@ -360,14 +358,9 @@ fn handle_sse_event(
                         return Ok(Some(StreamOutcome::Terminal(Err(RunFailed(summary).into()))));
                     }
                     "cancelled" => {
-                        let reason = delta
-                            .event
-                            .detail
-                            .clone()
-                            .unwrap_or_else(|| "cancelled".into());
-                        return Ok(Some(StreamOutcome::Terminal(Err(RunFailed(format!(
-                            "{} cancelled: {reason}",
-                            label.to_lowercase()
+                        return Ok(Some(StreamOutcome::Terminal(Err(RunFailed(cancelled_line(
+                            &format!("{label} cancelled"),
+                            delta.event.detail.as_deref(),
                         ))
                         .into()))));
                     }
@@ -465,6 +458,15 @@ fn is_terminal_status(status: &str) -> bool {
     matches!(status, "succeeded" | "failed" | "skipped" | "cancelled")
 }
 
+/// "Deploy cancelled. A project member cancelled it." The platform's reason
+/// is a sentence of its own; an old run may have none.
+fn cancelled_line(what: &str, reason: Option<&str>) -> String {
+    match reason.map(str::trim).filter(|reason| !reason.is_empty()) {
+        Some(reason) => format!("{what}. {reason}"),
+        None => format!("{what}."),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -531,3 +533,4 @@ mod tests {
         assert_eq!(stage_names(snapshot), ["rollout"]);
     }
 }
+

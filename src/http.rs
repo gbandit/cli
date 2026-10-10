@@ -133,7 +133,7 @@ impl ApiError {
         let retryable = matches!(status.as_u16(), 502..=504);
         let detail = if retryable {
             format!(
-                "The platform could not be reached (HTTP {}). Try again in a moment.",
+                "The platform isn't responding right now (HTTP {}). Try again in a moment.",
                 status.as_u16()
             )
         } else {
@@ -187,11 +187,20 @@ impl ApiError {
 
 impl std::fmt::Display for ApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.message())?;
-        if self.status == reqwest::StatusCode::UNAUTHORIZED.as_u16() {
-            f.write_str(" — run `gbandit login` to re-authenticate")?;
+        let message = self.message();
+        // An agent's identity is its pod's, which `gbandit login` can't change.
+        if self.status == reqwest::StatusCode::UNAUTHORIZED.as_u16()
+            && !crate::auth_session::runs_as_agent()
+        {
+            write!(
+                f,
+                "{}. Run `gbandit login` to log in again.",
+                message.trim_end_matches('.')
+            )?;
         } else if self.is(problem_types::CLI_OUTDATED) {
-            f.write_str(" — run `gbandit update`")?;
+            write!(f, "{}. Run `gbandit update`.", message.trim_end_matches('.'))?;
+        } else {
+            f.write_str(message)?;
         }
         for issue in &self.issues {
             f.write_str("\n  - ")?;
@@ -234,7 +243,8 @@ fn write_diagnostics(
     }
     let hidden = lines.count();
     if hidden > 0 {
-        write!(f, "\n  … {hidden} more lines (--verbose shows them)")?;
+        let lines = if hidden == 1 { "line" } else { "lines" };
+        write!(f, "\n  … {hidden} more {lines} (--verbose shows them)")?;
     }
     Ok(())
 }
@@ -330,7 +340,7 @@ mod tests {
         assert!(error.retryable);
         assert_eq!(
             error.to_string(),
-            "The platform could not be reached (HTTP 502). Try again in a moment.\n  <html>502</html>\n  request id: req-2"
+            "The platform isn't responding right now (HTTP 502). Try again in a moment.\n  <html>502</html>\n  request id: req-2"
         );
     }
 

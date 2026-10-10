@@ -1,6 +1,6 @@
 # gbandit CLI
 
-The command-line client for the [gbandit](https://gbandit.com) game-hosting platform. Used to deploy projects, tail logs, run SQL against tenant databases, and manage env vars.
+The command-line client for the [gbandit](https://gbandit.com) game-hosting platform. Use it to deploy and promote games, read logs, query your game's database and manage environment variables.
 
 ## Install
 
@@ -29,15 +29,22 @@ Prebuilt binaries are published for:
 ## Usage
 
 ```sh
+gbandit login
+gbandit scaffold <name>
 gbandit deploy --message "<what you just changed>"
 gbandit promote
-gbandit logs [frontend|backend]
+gbandit logs <frontend|backend>
 gbandit sql "SELECT ..."
-gbandit env [set|list|delete]
+gbandit env <set|list|delete>
+gbandit project <show|cover|publish|unpublish|delete>
+gbandit docs [page]
+gbandit whoami
 gbandit update
 ```
 
-`gbandit deploy` builds and rolls out to `dev`; it takes no environment, because dev is the only one a build can reach. Prod never builds: `gbandit promote` points prod at the Release dev is running and rolls it out, so prod serves exactly what you verified in dev.
+Run `gbandit <command> --help` for the details of each command.
+
+`gbandit deploy` builds and rolls out to dev. It takes no environment, because dev is the only one a build can reach. Prod is never built: `gbandit promote` rolls out what dev runs to prod, so prod serves exactly what you tested in dev.
 
 `gbandit update` downloads the latest GitHub release for your OS/architecture and replaces the installed binary. Pin a specific release with `gbandit update --tag vX.Y.Z`.
 
@@ -51,15 +58,12 @@ The binary lands at `target/release/gbandit`.
 
 ## Pointing at a non-prod platform
 
-Set both env vars before invoking the CLI:
+Set these env vars before invoking the CLI:
 
 ```sh
 export GBANDIT_AUTH_ORIGIN=http://auth.gbandit.localhost
 export GBANDIT_PLATFORM_API_ORIGIN=http://platform.gbandit.localhost/api
+export GBANDIT_DOCS_ORIGIN=http://docs.gbandit.localhost
 ```
 
-When `GBANDIT_AUTH_ORIGIN` resolves to a localhost URL the CLI keeps a separate `credentials-dev.json` so dev tokens don't clobber prod ones.
-
-## Releases
-
-Tagging `vX.Y.Z` on `main` triggers `.github/workflows/release.yml`, which cross-compiles for all supported targets and attaches the archives (and `install.sh` / `install.ps1`) to a GitHub release.
+Credentials are stored per platform domain (`credentials-<domain>.json`), so logging in to a dev platform doesn't log you out of prod.

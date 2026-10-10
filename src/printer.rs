@@ -137,3 +137,15 @@ fn format_event_timestamp(created_at: &str) -> Option<String> {
     let cs = local.timestamp_subsec_millis() / 10;
     Some(format!("{}.{cs:02}", local.format("%H:%M:%S")))
 }
+
+/// An RFC 3339 timestamp from the platform in the reader's local time, e.g.
+/// "7 Nov 2026 at 14:03". Anything unparseable is shown as it came.
+pub(crate) fn readable_time(rfc3339: &str) -> String {
+    match chrono::DateTime::parse_from_rfc3339(rfc3339) {
+        Ok(parsed) => parsed
+            .with_timezone(&Local)
+            .format("%-d %b %Y at %H:%M")
+            .to_string(),
+        Err(_) => rfc3339.to_string(),
+    }
+}

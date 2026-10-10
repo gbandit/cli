@@ -46,7 +46,10 @@ pub(crate) async fn show(printer: &Printer, target: &ProjectTarget, json: bool) 
     printer.progress(format!(
         "Catalog:  {}",
         match &project.published_at {
-            Some(published_at) => format!("published since {published_at}"),
+            Some(published_at) => format!(
+                "published since {}",
+                crate::printer::readable_time(published_at)
+            ),
             None => "not published".to_string(),
         }
     ));
@@ -143,6 +146,7 @@ mod tests {
             cover_image_url: cover.then(|| "https://assets.gbandit.com/c.webp".into()),
             published_at: published.then(|| "2026-10-03T12:00:00Z".into()),
             play_url: "https://space-shooter.gbandit.com".into(),
+            dev_url: "https://dev-space-shooter.gbandit.com".into(),
         }
     }
 

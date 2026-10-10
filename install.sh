@@ -26,7 +26,7 @@ esac
 case "$uname_m" in
     x86_64|amd64) arch="x86_64" ;;
     arm64|aarch64) arch="aarch64" ;;
-    *) echo "unsupported arch: $uname_m" >&2; exit 1 ;;
+    *) echo "unsupported architecture: $uname_m" >&2; exit 1 ;;
 esac
 
 target="${arch}-${os}"
@@ -52,22 +52,22 @@ chmod +x "$INSTALL_DIR/gbandit"
 
 echo "Installed: $INSTALL_DIR/gbandit"
 
-echo ""
-echo "Get started:"
-echo ""
-echo "  gbandit login                  # authenticate this machine"
-echo "  gbandit scaffold my-game       # scaffold a game into ./my-game (deploy creates the project)"
-echo "  cd my-game && gbandit deploy   # live on your dev URL in one command"
-echo ""
-echo "Already have a project on gbandit?"
-echo ""
-echo "  Link a git remote to it under your project's settings on"
-echo "  platform.gbandit.com — then any clone of that repo can deploy:"
-echo ""
-echo "  git clone <your-remote> && cd <your-repo>"
-echo "  gbandit deploy"
-
 case ":$PATH:" in
     *":$INSTALL_DIR:"*) ;;
     *) echo ""; echo "NOTE: $INSTALL_DIR is not in your PATH. Add it to your shell rc:"; echo "  export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
 esac
+
+echo ""
+echo "Get started:"
+echo ""
+echo "  gbandit login                  # log in with Google"
+echo "  gbandit scaffold my-game       # scaffold a game into ./my-game (deploy creates the project)"
+echo "  cd my-game && gbandit deploy   # live on your dev URL in one command"
+echo ""
+echo "Started a game in the browser?"
+echo ""
+echo "  Link a git remote in its Settings on platform.gbandit.com,"
+echo "  then clone the repo and deploy from it:"
+echo ""
+echo "  git clone <your-remote> && cd <your-repo>"
+echo "  gbandit deploy"

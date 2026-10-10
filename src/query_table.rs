@@ -48,7 +48,7 @@ impl<'a> QueryTable<'a> {
             println!(" {} ", cells.join(" | "));
         }
 
-        println!("({} rows)", rows.len());
+        println!("({} {})", rows.len(), if rows.len() == 1 { "row" } else { "rows" });
     }
 }
 

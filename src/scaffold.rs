@@ -26,12 +26,18 @@ pub(crate) struct ScaffoldOptions<'a> {
     /// into deploy-managed titles. Agent scaffolds pass None so a deploy
     /// can't clobber a title set in the web UI.
     pub(crate) title: Option<&'a str>,
+    /// Shown in the browser tab and on the game's home page.
+    pub(crate) page_title: &'a str,
 }
+
+/// The platform's limit (`MAX_PROJECT_SLUG_LEN` in tenant-routing): the slug
+/// has to fit inside the project's 63-character Kubernetes namespace name.
+pub(crate) const MAX_SLUG_LEN: usize = 55;
 
 pub(crate) fn scaffold_project(printer: &Printer, opts: ScaffoldOptions<'_>) -> Result<()> {
     if !is_valid_slug(opts.slug) {
         bail!(
-            "invalid slug '{}': must be 1–63 chars, start/end with [a-z0-9], contain only [a-z0-9-]",
+            "invalid slug '{}': must be 1–{MAX_SLUG_LEN} chars, start/end with [a-z0-9], contain only [a-z0-9-]",
             opts.slug
         );
     }
@@ -41,7 +47,7 @@ pub(crate) fn scaffold_project(printer: &Printer, opts: ScaffoldOptions<'_>) -> 
 
     if !is_empty_dir(opts.target)? {
         bail!(
-            "target directory {} is not empty — scaffold refuses to overwrite",
+            "target directory {} is not empty; scaffold won't overwrite it",
             opts.target.display()
         );
     }
@@ -80,9 +86,10 @@ pub(crate) fn scaffold_project(printer: &Printer, opts: ScaffoldOptions<'_>) -> 
     if let Some(title) = opts.title {
         insert_title_into_gbandit_jsonc(opts.target, title)?;
     }
+    set_page_title(opts.target, opts.page_title)?;
 
     if opts.init_git {
-        printer.progress("Initialising git repo with initial commit...");
+        printer.progress("Initializing git repo with initial commit...");
         run_git_in(opts.target, &["init", "-b", "main"])?;
         run_git_in(opts.target, &["add", "-A"])?;
         // The template is ours, not the user's work. Authoring it as gbandit
@@ -108,7 +115,7 @@ pub(crate) fn scaffold_project(printer: &Printer, opts: ScaffoldOptions<'_>) -> 
 }
 
 fn is_valid_slug(slug: &str) -> bool {
-    if slug.is_empty() || slug.len() > 63 {
+    if slug.is_empty() || slug.len() > MAX_SLUG_LEN {
         return false;
     }
     let bytes = slug.as_bytes();
@@ -153,8 +160,8 @@ pub(crate) fn slugify(title: &str) -> String {
     while out.ends_with('-') {
         out.pop();
     }
-    if out.len() > 63 {
-        out.truncate(63);
+    if out.len() > MAX_SLUG_LEN {
+        out.truncate(MAX_SLUG_LEN);
         while out.ends_with('-') {
             out.pop();
         }
@@ -225,6 +232,27 @@ fn substitute_placeholders(root: &Path, dashed: &str, underscored: &str) -> Resu
             .with_context(|| format!("failed to write {}", path.display()))?;
     }
     Ok(())
+}
+
+/// The browser tab and the home page show the game's title, not its slug.
+fn set_page_title(target: &Path, title: &str) -> Result<()> {
+    let html = title
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    replace_in_file(&target.join("frontend/index.html"), "replace-with-title", &html)?;
+    replace_in_file(
+        &target.join("frontend/src/config.ts"),
+        "\"replace-with-title\"",
+        &serde_json::to_string(title)?,
+    )
+}
+
+fn replace_in_file(path: &Path, placeholder: &str, value: &str) -> Result<()> {
+    let content =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    fs::write(path, content.replace(placeholder, value))
+        .with_context(|| format!("failed to write {}", path.display()))
 }
 
 fn collect_text_files(root: &Path) -> Result<Vec<PathBuf>> {
@@ -301,9 +329,6 @@ mod tests {
     // "backend": {
     //     "dockerfile": "backend/Dockerfile", "context": "backend"
     // },
-    "local_dev": {
-        "auto_commit": true
-    }
 }
 "#;
 

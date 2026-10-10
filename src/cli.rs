@@ -1,14 +1,14 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
+/// Deploy and manage games on gbandit.
 #[derive(Parser)]
 #[command(name = "gbandit", version = crate::BUILD_VERSION)]
 pub(crate) struct Cli {
-    /// Show subprocess output, per-stage status events and the full
-    /// diagnostics of a failed platform call.
-    #[arg(short, long, global = true)]
+    /// Show full build output, stage events and error diagnostics.
+    #[arg(short, long, global = true, help_heading = "Global options")]
     pub(crate) verbose: bool,
     /// Prefix every line with a timestamp.
-    #[arg(short, long, global = true)]
+    #[arg(short, long, global = true, help_heading = "Global options")]
     pub(crate) timestamps: bool,
     #[command(subcommand)]
     pub(crate) command: Command,
@@ -16,12 +16,13 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand)]
 pub(crate) enum Command {
-    /// Sign in with Google by approving the login in a browser. Without a
-    /// terminal it prints the link and returns instead of waiting, and the
-    /// next command picks up the login once it is approved.
+    /// Log in with Google in the browser.
+    ///
+    /// Without a terminal it prints the link and returns instead of waiting,
+    /// and the next command picks up the login once it is approved.
     Login {
-        /// Create a guest account without a browser. Scriptable; link Google
-        /// later with a plain `gbandit login`.
+        /// Create a guest account without a browser. Move it to Google later
+        /// with a plain `gbandit login`.
         #[arg(long, conflicts_with = "poll")]
         guest: bool,
         /// Check on a login that is waiting for approval. Fails while it is
@@ -29,26 +30,34 @@ pub(crate) enum Command {
         #[arg(long)]
         poll: bool,
     },
+    /// Show who you're logged in as.
     Whoami,
-    /// Update the gbandit CLI from GitHub releases.
+    /// Update the gbandit CLI to the latest release.
     Update {
         /// Install a specific release tag instead of the latest release.
         #[arg(long)]
         tag: Option<String>,
     },
+    /// Run a SQL query against the game's database.
     Sql {
+        /// The SQL to run.
         query: String,
+        /// Environment.
         #[arg(short, long, default_value_t = Environment::Dev)]
         environment: Environment,
+        /// Project slug (default: from gbandit.jsonc).
         #[arg(long)]
         project: Option<String>,
     },
-    /// Build the project and roll it out to dev. Prod never builds; `gbandit
-    /// promote` is how it changes.
+    /// Build the project and roll it out to dev.
+    ///
+    /// Prod is never built. `gbandit promote` moves what dev runs to prod.
     Deploy {
+        /// Project slug (default: from gbandit.jsonc).
         #[arg(long)]
         project: Option<String>,
-        /// Becomes the git commit message and the deploy's label in the history.
+        /// Label for this deploy in the history, and the commit message when
+        /// auto-commit commits.
         #[arg(short, long)]
         message: Option<String>,
         /// Agent warm build: deploys the fresh scaffold to warm the build
@@ -60,9 +69,9 @@ pub(crate) enum Command {
         /// not exist yet.
         #[arg(long)]
         create: bool,
-        /// Confirm removing the project's database when this deploy drops
-        /// the `database` field from gbandit.jsonc. Without it the platform
-        /// rejects such a deploy; interactive runs are prompted instead.
+        /// Confirm removing dev's database when gbandit.jsonc no longer
+        /// declares it. Without it such a deploy is rejected; interactive runs
+        /// are asked instead.
         #[arg(long)]
         confirm_database_removal: bool,
         /// Return after starting the deployment instead of waiting for completion.
@@ -74,14 +83,16 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Point prod at the Release dev is running and roll it out. Nothing is
-    /// built: prod serves exactly the images dev was verified with.
+    /// Roll out what dev runs to prod, without rebuilding.
+    ///
+    /// Prod serves exactly the build you tested in dev.
     Promote {
+        /// Project slug (default: from gbandit.jsonc).
         #[arg(long)]
         project: Option<String>,
-        /// Confirm removing prod's database when the Release dev runs no
-        /// longer declares one. Without it the platform rejects such a
-        /// promotion; interactive runs are prompted instead.
+        /// Confirm removing prod's database when what dev runs no longer
+        /// declares it. Without it such a promotion is rejected; interactive
+        /// runs are asked instead.
         #[arg(long)]
         confirm_database_removal: bool,
         /// Return after starting the promotion instead of waiting for completion.
@@ -91,30 +102,37 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Print recent frontend or backend logs.
     Logs {
+        /// Which logs to print.
         component: LogTarget,
+        /// Environment.
         #[arg(short, long, default_value_t = Environment::Dev)]
         environment: Environment,
+        /// Project slug (default: from gbandit.jsonc).
         #[arg(long)]
         project: Option<String>,
     },
+    /// Manage environment variables.
     Env {
         #[command(subcommand)]
         action: EnvAction,
     },
+    /// Manage the game's profile, catalog listing and deletion.
     Project {
         #[command(subcommand)]
         action: ProjectAction,
     },
-    /// Scaffold the game template into ./<name>/ (or the current directory
-    /// when NAME is "."). Purely local — the platform project is created on
-    /// your first `gbandit deploy`.
+    /// Create a new game from the template.
+    ///
+    /// The game goes in ./<name>/, or the current directory when NAME is ".".
+    /// The project is created on the platform by your first `gbandit deploy`.
     Scaffold {
-        /// Project slug + directory name. Use "." for in-place scaffolding.
-        /// Prompted if omitted.
+        /// Project slug, also used as the directory name. Use "." to scaffold
+        /// into the current directory. Asked for if omitted.
         name: Option<String>,
-        /// Display title, stored as `title` in gbandit.jsonc — deploy keeps
-        /// the platform title in sync with that field. Prompted if omitted.
+        /// Display title, stored as `title` in gbandit.jsonc. Every deploy
+        /// sets the platform title from it. Asked for if omitted.
         #[arg(long)]
         title: Option<String>,
         /// Scaffold into this directory instead of ./<name>/. Used by the
@@ -122,8 +140,9 @@ pub(crate) enum Command {
         #[arg(long, hide = true)]
         target: Option<String>,
     },
-    /// Print platform documentation as raw markdown, fetched from
-    /// docs.gbandit.com so it always reflects the current deploy contract.
+    /// Print the platform docs.
+    ///
+    /// Fetched as markdown from docs.gbandit.com, so it is always current.
     Docs {
         /// Page to print (e.g. "deploy", "auth", "heartbeat"). Omit to
         /// print the llms.txt index of available pages.
@@ -132,14 +151,15 @@ pub(crate) enum Command {
         #[arg(long)]
         full: bool,
     },
+    /// Log out and revoke this session.
     Logout,
 }
 
 #[derive(Subcommand)]
 pub(crate) enum ProjectAction {
-    /// Show the game profile: title, cover image, whether the game is
-    /// published to the game catalog, and where it is played.
+    /// Show the game's title, cover, catalog listing and address.
     Show {
+        /// Project slug (default: from gbandit.jsonc).
         #[arg(long)]
         project: Option<String>,
         /// Emit stable machine-readable JSON on stdout.
@@ -151,21 +171,24 @@ pub(crate) enum ProjectAction {
     Cover {
         /// Path to the image file.
         image: std::path::PathBuf,
+        /// Project slug (default: from gbandit.jsonc).
         #[arg(long)]
         project: Option<String>,
     },
     /// List the game in the game catalog. Needs a cover image and a game
     /// promoted to prod.
     Publish {
+        /// Project slug (default: from gbandit.jsonc).
         #[arg(long)]
         project: Option<String>,
     },
     /// Take the game out of the game catalog. The game itself keeps running.
     Unpublish {
+        /// Project slug (default: from gbandit.jsonc).
         #[arg(long)]
         project: Option<String>,
     },
-    /// Delete a project entirely. No undo. Project-member and human-only.
+    /// Permanently delete a project.
     Delete {
         /// Project slug to delete.
         slug: String,
@@ -177,25 +200,35 @@ pub(crate) enum ProjectAction {
 
 #[derive(Subcommand)]
 pub(crate) enum EnvAction {
+    /// Set one or more variables.
     Set {
-        /// KEY=VALUE pairs to set
+        /// KEY=VALUE pairs to set.
         #[arg(required = true)]
         pairs: Vec<String>,
+        /// Environment.
         #[arg(short, long, default_value_t = Environment::Dev)]
         environment: Environment,
+        /// Project slug (default: from gbandit.jsonc).
         #[arg(long)]
         project: Option<String>,
     },
+    /// List variables.
     List {
+        /// Environment.
         #[arg(short, long, default_value_t = Environment::Dev)]
         environment: Environment,
+        /// Project slug (default: from gbandit.jsonc).
         #[arg(long)]
         project: Option<String>,
     },
+    /// Delete a variable.
     Delete {
+        /// Name of the variable.
         key: String,
+        /// Environment.
         #[arg(short, long, default_value_t = Environment::Dev)]
         environment: Environment,
+        /// Project slug (default: from gbandit.jsonc).
         #[arg(long)]
         project: Option<String>,
     },
