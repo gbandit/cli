@@ -15,6 +15,7 @@ mod query_table;
 mod release_installer;
 mod scaffold;
 mod scaffold_command;
+mod timing;
 
 use anyhow::Result;
 use clap::Parser;

@@ -13,6 +13,7 @@ use crate::pipeline_watch::{RunFailed, watch_pipeline};
 use crate::platform_client::{DeployPipeline, PlatformClient};
 use crate::printer::Printer;
 use crate::scaffold::title_from_slug;
+use crate::timing;
 
 /// Everything the deploy command chose at the CLI layer, built once and
 /// threaded through the workflow as a unit.
@@ -78,8 +79,11 @@ impl<'a> DeployWorkflow<'a> {
     }
 
     async fn deploy_inner(&self, config: &ProjectConfig, args: &DeployArgs) -> Result<()> {
+        let auth = timing::start("auth");
         self.ensure_credentials(args).await?;
-        let mut prepared = self.prepare(config, args).await?;
+        let client = PlatformClient::from_saved_auth().await?;
+        auth.end();
+        let mut prepared = self.prepare(client, config, args).await?;
 
         let mut result = self
             .deploy_attempt(&prepared, config, args, args.confirm_database_removal)
@@ -130,9 +134,11 @@ impl<'a> DeployWorkflow<'a> {
             Err(_) if self.run_started.get() => Outcome::Unknown,
             Err(_) => Outcome::NotDeployed,
         };
+        let settle = timing::start("settle");
         if let Err(err) = self.settle_commit(&prepared, config, &outcome) {
             self.printer.progress(format!("{err:#}"));
         }
+        settle.end();
 
         if matches!(outcome, Outcome::Deployed)
             && let Ok(Some(project)) = prepared.client.get_project(&config.project).await
@@ -225,29 +231,31 @@ impl<'a> DeployWorkflow<'a> {
 
     /// One-time work: project existence/title sync, archive build and
     /// auto-commit. Never repeated by the confirmation retry.
-    async fn prepare(&self, config: &ProjectConfig, args: &DeployArgs) -> Result<PreparedDeploy> {
+    async fn prepare(
+        &self,
+        client: PlatformClient,
+        config: &ProjectConfig,
+        args: &DeployArgs,
+    ) -> Result<PreparedDeploy> {
         // Ensure the platform project exists (and its title matches
         // gbandit.jsonc) before any local side effects like the
         // auto-commit — answering "n" to the create prompt must leave the
         // working tree untouched.
-        let client = PlatformClient::from_saved_auth().await?;
+        let ensure_project = timing::start("ensure_project");
         self.ensure_project(&client, config, args.create, args.json)
             .await?;
+        ensure_project.end();
 
-        let timing = std::env::var("GBANDIT_TIMING").is_ok();
-        let archive_started = std::time::Instant::now();
+        let archive_phase = timing::start("archive");
         let archive = build_project_archive()?;
-        if timing {
-            eprintln!(
-                "@timing phase=archive ms={}",
-                archive_started.elapsed().as_millis()
-            );
-        }
         let archive_bytes = fs::read(archive.path())?;
+        archive_phase.end();
 
         // Committed after the archive is built, so nothing that can fail
         // before the upload is left behind as a commit.
+        let commit_phase = timing::start("commit");
         let commit = prepare_commit(self.printer, config.auto_commit(), args.message.as_deref())?;
+        commit_phase.end();
 
         Ok(PreparedDeploy {
             client,
@@ -296,6 +304,7 @@ impl<'a> DeployWorkflow<'a> {
 
         self.printer
             .progress(format!("Deploying project {}...", config.project));
+        let watch = timing::start("watch");
         watch_pipeline(
             self.printer,
             prepared.client.http(),
@@ -305,6 +314,7 @@ impl<'a> DeployWorkflow<'a> {
             "Deploy",
         )
         .await?;
+        watch.end();
         Ok(Attempt::Succeeded)
     }
 
@@ -318,8 +328,7 @@ impl<'a> DeployWorkflow<'a> {
         // Fresh per attempt: the platform dedupes on submission_id, so the
         // confirmed retry must not reuse the rejected attempt's id.
         let submission_id = uuid::Uuid::new_v4().to_string();
-        let timing = std::env::var("GBANDIT_TIMING").is_ok();
-        let upload_started = std::time::Instant::now();
+        let upload_phase = timing::start("upload");
         let make_form = || {
             let mut form = Form::new().text("submission_id", submission_id.clone());
             if let Some(sha) = prepared.commit_sha.as_deref() {
@@ -351,12 +360,7 @@ impl<'a> DeployWorkflow<'a> {
                     .await?,
             )
         };
-        if timing {
-            eprintln!(
-                "@timing phase=upload ms={}",
-                upload_started.elapsed().as_millis()
-            );
-        }
+        upload_phase.end();
         Ok(upload)
     }
 
