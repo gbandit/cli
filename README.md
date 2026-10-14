@@ -36,6 +36,7 @@ gbandit promote
 gbandit logs <frontend|backend>
 gbandit sql "SELECT ..."
 gbandit env <set|list|delete>
+gbandit test-token [1-10] [--guest]
 gbandit project <show|cover|publish|unpublish|delete>
 gbandit docs [page]
 gbandit whoami

@@ -86,6 +86,15 @@ pub(crate) async fn run(command: Command, printer: &Printer) -> Result<()> {
             let project = resolve_project(project)?;
             logs(printer, environment.as_str(), component, &project).await
         }
+        Command::TestToken {
+            number,
+            guest,
+            project,
+            json,
+        } => {
+            let project = resolve_project(project)?;
+            test_token(&project, number, guest, json).await
+        }
         Command::Env { action } => match action {
             EnvAction::Set {
                 pairs,
@@ -237,6 +246,23 @@ fn url_path(url: &str) -> &str {
         Some(idx) => &after_scheme[idx..],
         None => "/",
     }
+}
+
+/// The bare token goes to stdout so that `$(gbandit test-token)` is the
+/// token; who it is for goes to stderr.
+async fn test_token(project: &str, number: u8, guest: bool, json: bool) -> Result<()> {
+    let client = PlatformClient::from_saved_auth().await?;
+    let token = client.test_user_token(project, number, guest).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&token)?);
+    } else {
+        eprintln!(
+            "Token for {} ({}) on dev, valid until {}",
+            token.username, token.user_id, token.expires_at
+        );
+        println!("{}", token.access_token);
+    }
+    Ok(())
 }
 
 async fn env_set(

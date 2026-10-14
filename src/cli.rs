@@ -113,6 +113,29 @@ pub(crate) enum Command {
         #[arg(long)]
         project: Option<String>,
     },
+    /// Print a token for one of the game's Test Users, made-up players of
+    /// its dev environment.
+    ///
+    /// Call the dev backend as that player with
+    /// `curl -H "Authorization: Bearer $(gbandit test-token 2)" ...`, or a
+    /// WebSocket with the `bearer` subprotocol. Each Test User is the same
+    /// player every time. The token lasts 30 minutes and prod refuses it.
+    TestToken {
+        /// Which Test User, 1 to 10.
+        #[arg(default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=10))]
+        number: u8,
+        /// The guest with this number instead (test-guest-N), a player of its
+        /// own who has not signed in with Google.
+        #[arg(long)]
+        guest: bool,
+        /// Project slug (default: from gbandit.jsonc).
+        #[arg(long)]
+        project: Option<String>,
+        /// Print the token with the Test User's id, username and expiry as
+        /// JSON instead of the bare token.
+        #[arg(long)]
+        json: bool,
+    },
     /// Manage environment variables.
     Env {
         #[command(subcommand)]

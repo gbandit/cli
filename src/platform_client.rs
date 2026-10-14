@@ -155,6 +155,28 @@ impl PlatformClient {
         Ok(snapshot.logs)
     }
 
+    pub(crate) async fn test_user_token(
+        &self,
+        project: &str,
+        number: u8,
+        guest: bool,
+    ) -> Result<TestUserToken> {
+        let response = self
+            .http
+            .post(format!(
+                "{}/projects/{project}/test-users/{number}/token",
+                self.origin
+            ))
+            .bearer_auth(&self.token)
+            .json(&serde_json::json!({ "guest": guest }))
+            .send()
+            .await
+            .context("failed to request a test user token")?;
+        parse_json(response).await.with_context(|| {
+            format!("failed to get a token for test-user-{number} of project '{project}'")
+        })
+    }
+
     pub(crate) async fn set_env(
         &self,
         environment: &str,
@@ -377,6 +399,15 @@ pub(crate) struct QueryResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct DeployPipeline {
     pub(crate) pipeline_run_id: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub(crate) struct TestUserToken {
+    pub(crate) access_token: String,
+    pub(crate) expires_at: String,
+    pub(crate) user_id: String,
+    pub(crate) username: String,
+    pub(crate) guest: bool,
 }
 
 #[derive(Debug, Deserialize)]
