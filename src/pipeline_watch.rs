@@ -355,13 +355,17 @@ fn handle_sse_event(
                             .detail
                             .clone()
                             .unwrap_or_else(|| format!("{} failed", label.to_lowercase()));
-                        return Ok(Some(StreamOutcome::Terminal(Err(RunFailed(summary).into()))));
+                        return Ok(Some(StreamOutcome::Terminal(
+                            Err(RunFailed(summary).into()),
+                        )));
                     }
                     "cancelled" => {
-                        return Ok(Some(StreamOutcome::Terminal(Err(RunFailed(cancelled_line(
-                            &format!("{label} cancelled"),
-                            delta.event.detail.as_deref(),
-                        ))
+                        return Ok(Some(StreamOutcome::Terminal(Err(RunFailed(
+                            cancelled_line(
+                                &format!("{label} cancelled"),
+                                delta.event.detail.as_deref(),
+                            ),
+                        )
                         .into()))));
                     }
                     _ => {}
@@ -533,4 +537,3 @@ mod tests {
         assert_eq!(stage_names(snapshot), ["rollout"]);
     }
 }
-

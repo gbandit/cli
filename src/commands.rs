@@ -166,9 +166,7 @@ async fn docs(page: Option<&str>, full: bool) -> Result<()> {
         .get(&url)
         .send()
         .await
-        .with_context(|| {
-            format!("failed to fetch {url}; check your network connection")
-        })?;
+        .with_context(|| format!("failed to fetch {url}; check your network connection"))?;
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         bail!("no docs page at {url}; run `gbandit docs` to list the pages");
     }

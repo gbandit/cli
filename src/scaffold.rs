@@ -240,7 +240,11 @@ fn set_page_title(target: &Path, title: &str) -> Result<()> {
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;");
-    replace_in_file(&target.join("frontend/index.html"), "replace-with-title", &html)?;
+    replace_in_file(
+        &target.join("frontend/index.html"),
+        "replace-with-title",
+        &html,
+    )?;
     replace_in_file(
         &target.join("frontend/src/config.ts"),
         "\"replace-with-title\"",

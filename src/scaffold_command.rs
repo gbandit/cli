@@ -51,8 +51,7 @@ pub(crate) async fn run(
     // scaffolds (the Pi Agent entrypoint) omit it so a later deploy can't
     // clobber a title set in the web UI.
     let (slug, title, existing_title) = if let Some(slug) = named_slug {
-        let existing_title =
-            check_named_slug(printer, availability_client.as_ref(), &slug).await?;
+        let existing_title = check_named_slug(printer, availability_client.as_ref(), &slug).await?;
         let title = match title {
             Some(t) => Some(t.trim().to_string()),
             None if interactive => Some(prompt_with_default(
@@ -68,9 +67,7 @@ pub(crate) async fn run(
         (slug, title, existing_title)
     } else {
         if !interactive {
-            bail!(
-                "a slug is required when not running interactively: `gbandit scaffold <slug>`"
-            );
+            bail!("a slug is required when not running interactively: `gbandit scaffold <slug>`");
         }
         let title = match title {
             Some(t) => t.trim().to_string(),

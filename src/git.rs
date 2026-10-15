@@ -1,5 +1,6 @@
 //! The only place in the CLI that shells out to `git`.
 
+use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
@@ -11,6 +12,46 @@ pub fn in_repo() -> Result<bool> {
         .output()
         .context("failed to run `git`; is git installed?")?;
     Ok(output.status.success())
+}
+
+/// What git counts as the project under `dir`, relative to it: tracked files
+/// plus untracked ones no ignore rule excludes. A tracked file deleted from
+/// the working tree is still listed. `None` outside a git work tree.
+pub fn project_files(dir: &Path) -> Result<Option<Vec<String>>> {
+    let in_repo = Command::new("git")
+        .current_dir(dir)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output()
+        .context("failed to run `git`; is git installed?")?;
+    if !in_repo.status.success() {
+        return Ok(None);
+    }
+    let output = Command::new("git")
+        .current_dir(dir)
+        .args([
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--deduplicate",
+        ])
+        .output()
+        .context("failed to run `git ls-files`")?;
+    if !output.status.success() {
+        bail!(
+            "`git ls-files` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let listed = String::from_utf8(output.stdout).context("git listed a path that is not UTF-8")?;
+    Ok(Some(
+        listed
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+            .collect(),
+    ))
 }
 
 /// True when the working tree has no uncommitted changes and no untracked files.

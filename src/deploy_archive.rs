@@ -1,11 +1,13 @@
 use std::fs;
-use std::io::Write;
-use std::path::Path;
+use std::io::{ErrorKind, Write};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use ignore::WalkBuilder;
 use tar::Builder;
 use tempfile::NamedTempFile;
+
+use crate::git;
 
 pub(crate) fn build_project_archive() -> Result<NamedTempFile> {
     build_project_archive_in(Path::new("."))
@@ -34,42 +36,23 @@ fn build_project_archive_in(root: &Path) -> Result<NamedTempFile> {
         tar.append_file("gbandit.jsonc", &mut config_file)?;
     }
 
-    // Rely on .gitignore (and .ignore) for skipping build outputs, dependency
-    // directories, and other developer-local files. `.git` is the one exception
-    // — it can't be gitignored — so we hard-skip it. `hidden(false)` keeps
-    // dotfiles like `.gitignore` and `.dockerignore` in the bundle since
-    // they're meaningful project config.
-    let walker = WalkBuilder::new(root)
-        .standard_filters(true)
-        .hidden(false)
-        .filter_entry(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .map(|name| name != ".git")
-                .unwrap_or(true)
-        })
-        .build();
-
-    for entry in walker {
-        let entry = entry.context("failed to walk project directory")?;
-        let path = entry.path();
-        if path == root || path == config {
+    for relative in project_files(root)? {
+        if relative == Path::new("gbandit.jsonc") {
             continue;
         }
-        let Some(file_type) = entry.file_type() else {
-            continue;
+        let path = root.join(&relative);
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            // Tracked, but deleted from the working tree.
+            Err(err) if err.kind() == ErrorKind::NotFound => continue,
+            Err(err) => {
+                return Err(err).with_context(|| format!("failed to read {}", path.display()));
+            }
         };
-
-        let archive_path = path
-            .strip_prefix(root)
-            .with_context(|| format!("failed to strip archive root for {}", path.display()))?;
-
-        if file_type.is_dir() {
-            tar.append_dir(archive_path, path)?;
-        } else if file_type.is_file() {
-            let mut file = fs::File::open(path)?;
-            tar.append_file(archive_path, &mut file)?;
+        // Symlinks and submodules aren't shipped; the server rejects links anyway.
+        if metadata.is_file() {
+            let mut file = fs::File::open(&path)?;
+            tar.append_file(&relative, &mut file)?;
         }
     }
 
@@ -80,8 +63,39 @@ fn build_project_archive_in(root: &Path) -> Result<NamedTempFile> {
     Ok(temp)
 }
 
+/// The files a deploy ships, relative to `root`. In a git repo that is git's
+/// answer, the same one the Pi Agent's Code tab and size limit read. Outside
+/// one, the same ignore rules read without git.
+fn project_files(root: &Path) -> Result<Vec<PathBuf>> {
+    if let Some(files) = git::project_files(root)? {
+        return Ok(files.into_iter().map(PathBuf::from).collect());
+    }
+    // `hidden(false)` keeps dotfiles like `.dockerignore`: they're project config.
+    let mut files = Vec::new();
+    for entry in WalkBuilder::new(root)
+        .hidden(false)
+        .require_git(false)
+        .build()
+    {
+        let entry = entry.context("failed to walk project directory")?;
+        if entry.file_type().is_some_and(|kind| kind.is_file()) {
+            let relative = entry.path().strip_prefix(root).with_context(|| {
+                format!(
+                    "failed to strip archive root for {}",
+                    entry.path().display()
+                )
+            })?;
+            files.push(relative.to_path_buf());
+        }
+    }
+    Ok(files)
+}
+
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+    use std::process::Command;
+
     use super::build_project_archive_in;
 
     fn archive_entries(archive: &tempfile::NamedTempFile) -> Vec<String> {
@@ -120,5 +134,54 @@ mod tests {
             entries.contains(&"frontend/index.html".to_string()),
             "{entries:?}"
         );
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .current_dir(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+
+    #[test]
+    fn project_archive_in_a_repo_ships_what_git_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("gbandit.jsonc"), "{}").unwrap();
+        std::fs::write(root.join("tracked-ignored.txt"), "kept").unwrap();
+        std::fs::write(root.join("deleted.txt"), "gone").unwrap();
+        git(root, &["init", "-q"]);
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-qm", "init"]);
+        std::fs::write(root.join(".gitignore"), "*.txt\n").unwrap();
+        std::fs::remove_file(root.join("deleted.txt")).unwrap();
+        std::fs::write(root.join("untracked.txt"), "ignored").unwrap();
+        std::fs::write(root.join("new.js"), "added").unwrap();
+        std::fs::write(root.join(".ignore"), "new.js\n").unwrap();
+
+        let mut entries = archive_entries(&build_project_archive_in(root).unwrap());
+        assert_eq!(entries.remove(0), "gbandit.jsonc");
+        entries.sort();
+        assert_eq!(
+            entries,
+            [".gitignore", ".ignore", "new.js", "tracked-ignored.txt"]
+        );
+    }
+
+    #[test]
+    fn project_archive_outside_a_repo_honours_gitignore() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join(".gitignore"), "node_modules/\n").unwrap();
+        std::fs::create_dir_all(root.join("node_modules/x")).unwrap();
+        std::fs::write(root.join("node_modules/x/index.js"), "dep").unwrap();
+        std::fs::write(root.join("main.js"), "game").unwrap();
+
+        let mut entries = archive_entries(&build_project_archive_in(root).unwrap());
+        entries.sort();
+        assert_eq!(entries, [".gitignore", "main.js"]);
     }
 }

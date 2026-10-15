@@ -169,9 +169,7 @@ impl ApiError {
     ) -> Self {
         let is_problem = content_type
             .and_then(|value| value.split(';').next())
-            .is_some_and(|media_type| {
-                media_type.trim().eq_ignore_ascii_case(PROBLEM_CONTENT_TYPE)
-            });
+            .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case(PROBLEM_CONTENT_TYPE));
         let parsed = if is_problem {
             serde_json::from_slice::<ApiError>(bytes).ok()
         } else {
@@ -198,7 +196,11 @@ impl std::fmt::Display for ApiError {
                 message.trim_end_matches('.')
             )?;
         } else if self.is(problem_types::CLI_OUTDATED) {
-            write!(f, "{}. Run `gbandit update`.", message.trim_end_matches('.'))?;
+            write!(
+                f,
+                "{}. Run `gbandit update`.",
+                message.trim_end_matches('.')
+            )?;
         } else {
             f.write_str(message)?;
         }

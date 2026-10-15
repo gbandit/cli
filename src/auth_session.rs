@@ -295,7 +295,9 @@ fn save_approved_login(
 
     let who = display_name(&credentials);
     let mut message = match pending.kind {
-        LoginKind::Claim => format!("Your projects are now in your Google account. Logged in as {who}."),
+        LoginKind::Claim => {
+            format!("Your projects are now in your Google account. Logged in as {who}.")
+        }
         LoginKind::Login => format!("Logged in as {who}."),
     };
     // The browser decides which account the login completes as. A guest the
@@ -359,9 +361,8 @@ pub(crate) async fn login_guest(printer: &Printer) -> Result<()> {
                 "could not reach the auth server at {auth_origin}; check your network connection"
             )
         })?;
-    let session_token = session_cookie_value(&response).context(
-        "the auth server's response had no session cookie; is the server up to date?",
-    )?;
+    let session_token = session_cookie_value(&response)
+        .context("the auth server's response had no session cookie; is the server up to date?")?;
     let me: AnonymousLoginResponse = parse_json(response).await?;
 
     let credentials = StoredCredentials {
