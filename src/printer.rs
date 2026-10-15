@@ -55,6 +55,14 @@ impl Printer {
         }
     }
 
+    /// Warn-level Log event: always shown, labelled with its stage, since it
+    /// asks the user to change something.
+    pub(crate) fn warn(&self, stage: &str, created_at: Option<&str>, text: &str) {
+        for line in text.lines() {
+            self.print_event_line(stage, created_at, &format!("warning: {line}"), true);
+        }
+    }
+
     /// Info-level Log event (headline): always shown.
     pub(crate) fn info(&self, stage: &str, created_at: Option<&str>, text: &str) {
         for line in text.lines() {

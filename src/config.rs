@@ -75,6 +75,19 @@ pub(crate) fn platform_web_origin() -> String {
     api.strip_suffix("/api").map(str::to_string).unwrap_or(api)
 }
 
+/// The address of a game's Environment, e.g. `dev-chess` → https://dev-chess.gbandit.com.
+/// Games are served beside the platform's own hosts, on one base domain.
+pub(crate) fn game_origin(environment_slug: &str) -> Result<String> {
+    let web = platform_web_origin();
+    let Some((scheme, host)) = web.split_once("://") else {
+        bail!("the platform origin {web} has no scheme");
+    };
+    let Some(base_domain) = host.strip_prefix("platform.") else {
+        bail!("the platform origin {web} is not platform.<base domain>");
+    };
+    Ok(format!("{scheme}://{environment_slug}.{base_domain}"))
+}
+
 pub(crate) fn resolve_project(cli_project: Option<String>) -> Result<String> {
     if let Some(project) = cli_project {
         return Ok(project);

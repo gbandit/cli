@@ -294,8 +294,9 @@ fn handle_sse_event(
                         return Ok(None);
                     }
                     let text = delta.event.detail.as_deref().unwrap_or("");
-                    let is_info = delta.event.level == "info";
-                    if is_info {
+                    if delta.event.level == "warn" {
+                        printer.warn(&stage, created_at, text);
+                    } else if delta.event.level == "info" {
                         printer.info(&stage, created_at, text);
                     } else {
                         // Buffer for potential failure dump; stream in verbose.

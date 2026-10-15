@@ -95,6 +95,10 @@ pub(crate) async fn run(command: Command, printer: &Printer) -> Result<()> {
             let project = resolve_project(project)?;
             test_token(&project, number, guest, json).await
         }
+        Command::Runtime { project } => {
+            let project = resolve_project(project)?;
+            runtime(&project).await
+        }
         Command::Env { action } => match action {
             EnvAction::Set {
                 pairs,
@@ -177,6 +181,27 @@ async fn docs(page: Option<&str>, full: bool) -> Result<()> {
         .await
         .with_context(|| format!("failed to read response body from {url}"))?;
     print!("{text}");
+    Ok(())
+}
+
+/// Fetched rather than bundled for the same reason as the docs: what the
+/// platform serves is the runtime, and a stale binary must not serve an old one.
+async fn runtime(project: &str) -> Result<()> {
+    let url = format!(
+        "{}/__gbandit/runtime.js",
+        crate::config::game_origin(&format!("dev-{project}"))?
+    );
+    let script = crate::http::http_client()
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("failed to fetch {url}; check your network connection"))?
+        .error_for_status()
+        .with_context(|| format!("failed to fetch {url}"))?
+        .text()
+        .await
+        .with_context(|| format!("failed to read response body from {url}"))?;
+    print!("{script}");
     Ok(())
 }
 

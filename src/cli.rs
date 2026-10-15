@@ -136,6 +136,19 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Print the gbandit runtime, the script a game loads from
+    /// `/__gbandit/runtime.js`.
+    ///
+    /// The platform serves it on every game's address. A local dev server
+    /// has to serve it too, from this command: the template's Vite config
+    /// does. Fetched from your game's dev address, so it is always current.
+    // Hidden from --help: only dev servers run it (docs: /runtime#local).
+    #[command(hide = true)]
+    Runtime {
+        /// Project slug (default: from gbandit.jsonc).
+        #[arg(long)]
+        project: Option<String>,
+    },
     /// Manage environment variables.
     Env {
         #[command(subcommand)]
