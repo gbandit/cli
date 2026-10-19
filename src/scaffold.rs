@@ -13,7 +13,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::printer::Printer;
 
-const DEFAULT_TEMPLATE_REPO: &str = "https://github.com/gbandit/game-template";
+const TEMPLATE_REPO: &str = "https://github.com/gbandit/game-template";
 
 pub(crate) struct ScaffoldOptions<'a> {
     pub(crate) slug: &'a str,
@@ -52,33 +52,7 @@ pub(crate) fn scaffold_project(printer: &Printer, opts: ScaffoldOptions<'_>) -> 
         );
     }
 
-    let repo_url = std::env::var("GBANDIT_GAME_REPO_URL")
-        .unwrap_or_else(|_| DEFAULT_TEMPLATE_REPO.to_string());
-
-    printer.progress(format!("Cloning template from {repo_url}..."));
-    let tmp = tempfile::tempdir().context("failed to create temp dir for template clone")?;
-    let clone_dst = tmp.path().join("clone");
-    run_git(&[
-        "clone",
-        "--depth=1",
-        &repo_url,
-        clone_dst.to_str().context("clone path is not utf-8")?,
-    ])?;
-
-    // Throw away the template's shallow history so the new workspace owns
-    // its own linear git history. Carrying the template's graft boundary
-    // into the workspace breaks future `git push` to a user-linked remote.
-    let template_git_dir = clone_dst.join(".git");
-    if template_git_dir.exists() {
-        fs::remove_dir_all(&template_git_dir).with_context(|| {
-            format!(
-                "failed to drop template .git at {}",
-                template_git_dir.display()
-            )
-        })?;
-    }
-
-    copy_dir_contents(&clone_dst, opts.target)?;
+    materialise_template(printer, opts.target)?;
 
     let slug_underscored = opts.slug.replace('-', "_");
     substitute_placeholders(opts.target, opts.slug, &slug_underscored)?;
@@ -112,6 +86,43 @@ pub(crate) fn scaffold_project(printer: &Printer, opts: ScaffoldOptions<'_>) -> 
     }
 
     Ok(())
+}
+
+/// Puts the template's files into `target`: copied from
+/// `GBANDIT_GAME_TEMPLATE_DIR` when set, otherwise cloned from the public
+/// mirror. The Pi Agent image carries
+/// the template from the commit it was built from, so its first boot neither
+/// waits on GitHub nor fails without it.
+fn materialise_template(printer: &Printer, target: &Path) -> Result<()> {
+    if let Ok(template_dir) = std::env::var("GBANDIT_GAME_TEMPLATE_DIR") {
+        printer.progress(format!("Copying template from {template_dir}..."));
+        return copy_dir_contents(Path::new(&template_dir), target);
+    }
+
+    printer.progress(format!("Cloning template from {TEMPLATE_REPO}..."));
+    let tmp = tempfile::tempdir().context("failed to create temp dir for template clone")?;
+    let clone_dst = tmp.path().join("clone");
+    run_git(&[
+        "clone",
+        "--depth=1",
+        TEMPLATE_REPO,
+        clone_dst.to_str().context("clone path is not utf-8")?,
+    ])?;
+
+    // Throw away the template's shallow history so the new workspace owns
+    // its own linear git history. Carrying the template's graft boundary
+    // into the workspace breaks future `git push` to a user-linked remote.
+    let template_git_dir = clone_dst.join(".git");
+    if template_git_dir.exists() {
+        fs::remove_dir_all(&template_git_dir).with_context(|| {
+            format!(
+                "failed to drop template .git at {}",
+                template_git_dir.display()
+            )
+        })?;
+    }
+
+    copy_dir_contents(&clone_dst, target)
 }
 
 fn is_valid_slug(slug: &str) -> bool {
