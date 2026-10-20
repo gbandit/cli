@@ -47,7 +47,6 @@ pub(crate) async fn run(command: Command, printer: &Printer) -> Result<()> {
         Command::Deploy {
             project,
             message,
-            baseline,
             create,
             confirm_database_removal,
             detach,
@@ -56,7 +55,6 @@ pub(crate) async fn run(command: Command, printer: &Printer) -> Result<()> {
             let config = load_project_config(project)?;
             let args = DeployArgs {
                 message,
-                baseline,
                 create,
                 confirm_database_removal,
                 detach,

@@ -60,11 +60,6 @@ pub(crate) enum Command {
         /// auto-commit commits.
         #[arg(short, long)]
         message: Option<String>,
-        /// Agent warm build: deploys the fresh scaffold to warm the build
-        /// cache. Server-side it is skipped entirely if the project already
-        /// has a succeeded deploy.
-        #[arg(long, hide = true)]
-        baseline: bool,
         /// Create the project on the platform without asking when it does
         /// not exist yet.
         #[arg(long)]

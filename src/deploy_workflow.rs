@@ -19,7 +19,6 @@ use crate::timing;
 /// threaded through the workflow as a unit.
 pub(crate) struct DeployArgs {
     pub(crate) message: Option<String>,
-    pub(crate) baseline: bool,
     pub(crate) create: bool,
     pub(crate) confirm_database_removal: bool,
     pub(crate) detach: bool,
@@ -42,7 +41,6 @@ struct PreparedDeploy {
 enum Attempt {
     Succeeded,
     Detached,
-    BaselineSkipped,
 }
 
 /// What the deploy is known to have done, which decides what happens to its
@@ -128,7 +126,6 @@ impl<'a> DeployWorkflow<'a> {
 
         let outcome = match &result {
             Ok(Attempt::Succeeded) => Outcome::Deployed,
-            Ok(Attempt::BaselineSkipped) => Outcome::NotDeployed,
             Ok(Attempt::Detached) => Outcome::Unknown,
             Err(err) if err.downcast_ref::<RunFailed>().is_some() => Outcome::NotDeployed,
             Err(_) if self.run_started.get() => Outcome::Unknown,
@@ -274,19 +271,8 @@ impl<'a> DeployWorkflow<'a> {
         confirm_database_removal: bool,
     ) -> Result<Attempt> {
         let upload = self
-            .upload(prepared, config, args, confirm_database_removal)
+            .upload(prepared, config, confirm_database_removal)
             .await?;
-
-        let Some(upload) = upload else {
-            if args.json {
-                println!("{}", serde_json::json!({ "status": "baseline_skipped" }));
-            } else {
-                self.printer.progress(
-                    "Baseline deploy skipped: the project already has a successful deploy.",
-                );
-            }
-            return Ok(Attempt::BaselineSkipped);
-        };
         self.run_started.set(true);
 
         if args.json {
@@ -322,9 +308,8 @@ impl<'a> DeployWorkflow<'a> {
         &self,
         prepared: &PreparedDeploy,
         config: &ProjectConfig,
-        args: &DeployArgs,
         confirm_database_removal: bool,
-    ) -> Result<Option<DeployPipeline>> {
+    ) -> Result<DeployPipeline> {
         // Fresh per attempt: the platform dedupes on submission_id, so the
         // confirmed retry must not reuse the rejected attempt's id.
         let submission_id = uuid::Uuid::new_v4().to_string();
@@ -347,19 +332,10 @@ impl<'a> DeployWorkflow<'a> {
                     .mime_str("application/zstd")?,
             ))
         };
-        let upload = if args.baseline {
-            prepared
-                .client
-                .start_baseline_deploy(&config.project, make_form)
-                .await?
-        } else {
-            Some(
-                prepared
-                    .client
-                    .start_deploy(&config.project, make_form)
-                    .await?,
-            )
-        };
+        let upload = prepared
+            .client
+            .start_deploy(&config.project, make_form)
+            .await?;
         upload_phase.end();
         Ok(upload)
     }

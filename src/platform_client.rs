@@ -77,28 +77,6 @@ impl PlatformClient {
         parse_json(response).await.with_context(context)
     }
 
-    /// `Ok(None)` = the platform skipped the baseline deploy (200 instead of
-    /// 202) because the project already has a succeeded deploy.
-    pub(crate) async fn start_baseline_deploy<F>(
-        &self,
-        project: &str,
-        make_form: F,
-    ) -> Result<Option<DeployPipeline>>
-    where
-        F: Fn() -> Result<Form>,
-    {
-        let url = format!("{}/projects/{}/deploys/baseline", self.origin, project);
-        let context = || format!("failed to start baseline deploy for project '{project}'");
-        let response = self
-            .post_with_retry(&url, |request| Ok(request.multipart(make_form()?)))
-            .await
-            .with_context(context)?;
-        if response.status() == reqwest::StatusCode::OK {
-            return Ok(None);
-        }
-        Ok(Some(parse_json(response).await.with_context(context)?))
-    }
-
     /// POST with three attempts over transport failures and refusals the
     /// platform marks retryable. A refusal comes back as its `ApiError`, so
     /// only a success is returned as a response. `body` is applied per attempt
