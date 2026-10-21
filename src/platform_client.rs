@@ -431,6 +431,8 @@ pub(crate) struct ProjectSummary {
     pub(crate) play_url: String,
     /// Where a deploy rolls out to.
     pub(crate) dev_url: String,
+    /// When a guest's project is deleted unless they log in with Google.
+    pub(crate) deletes_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

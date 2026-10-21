@@ -147,6 +147,7 @@ mod tests {
             published_at: published.then(|| "2026-10-03T12:00:00Z".into()),
             play_url: "https://space-shooter.gbandit.com".into(),
             dev_url: "https://dev-space-shooter.gbandit.com".into(),
+            deletes_at: None,
         }
     }
 

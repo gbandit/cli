@@ -137,25 +137,40 @@ impl<'a> DeployWorkflow<'a> {
         }
         settle.end();
 
-        if matches!(outcome, Outcome::Deployed)
-            && let Ok(Some(project)) = prepared.client.get_project(&config.project).await
-        {
-            self.printer
-                .progress(format!("Live at {}", project.dev_url));
-        }
-
-        // A guest's game is live but belongs to nobody who can log in to the
-        // platform. The claim link is how it gets into a Google account.
         if matches!(outcome, Outcome::Deployed) {
+            let project = prepared
+                .client
+                .get_project(&config.project)
+                .await
+                .ok()
+                .flatten();
+            if let Some(project) = &project {
+                self.printer
+                    .progress(format!("Live at {}", project.dev_url));
+            }
+
+            // A guest's game is live but belongs to nobody who can log in to
+            // the platform, and is deleted a week after it was created. The
+            // claim link is how it gets into a Google account.
             let redirect = format!(
                 "{}/projects/{}",
                 crate::config::platform_web_origin(),
                 config.project
             );
-            if let Some(url) = crate::auth_session::claim_link(&redirect).await {
-                self.printer.progress(format!(
+            let deletes_on = project
+                .and_then(|project| project.deletes_at)
+                .map(|at| crate::printer::readable_time(&at));
+            match (crate::auth_session::claim_link(&redirect).await, deletes_on) {
+                (Some(url), Some(on)) => self.printer.progress(format!(
+                    "This game is deleted on {on} unless you open this link and log in with Google: {url}"
+                )),
+                (Some(url), None) => self.printer.progress(format!(
                     "To keep this game, open this link and log in with Google: {url}"
-                ));
+                )),
+                (None, Some(on)) => self.printer.progress(format!(
+                    "This game is deleted on {on} unless you run `gbandit login` and log in with Google."
+                )),
+                (None, None) => {}
             }
         }
 
