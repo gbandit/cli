@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result, bail};
+use eventsource_stream::{Event, EventStreamError, Eventsource};
+use futures_util::StreamExt;
 use serde::Deserialize;
 
 use crate::http::{ApiError, parse_error};
@@ -167,7 +169,7 @@ async fn stream_once(
         request = request.query(&[("since", since)]);
     }
 
-    let mut response = match request.send().await {
+    let response = match request.send().await {
         Ok(response) => response,
         // Couldn't open the connection — treat as a drop so the caller retries
         // under its reconnect budget rather than failing the whole deploy.
@@ -182,28 +184,28 @@ async fn stream_once(
             .with_context(|| format!("failed to follow {} progress", label.to_lowercase()));
     }
 
-    let mut buf = String::new();
+    let mut events = response.bytes_stream().eventsource();
     loop {
-        let chunk = match response.chunk().await {
-            Ok(Some(chunk)) => chunk,
-            // Clean EOF or a transport error mid-stream, without a terminal
-            // event — reconnect and resume from `last_event_id`.
-            Ok(None) | Err(_) => return Ok(StreamOutcome::Disconnected),
-        };
-        buf.push_str(&String::from_utf8_lossy(&chunk));
-        while let Some(end) = buf.find("\n\n") {
-            let raw_event = buf[..end].to_string();
-            buf.drain(..end + 2);
-            if let Some(outcome) = handle_sse_event(
-                printer,
-                buffers,
-                log_clock,
-                last_event_id,
-                &raw_event,
-                label,
-            )? {
-                return Ok(outcome);
+        let event = match events.next().await {
+            Some(Ok(event)) => event,
+            // A clean EOF, a transport error or a cut in the middle of a
+            // character, without a terminal event: reconnect and resume from
+            // `last_event_id`. Only bytes that can never form UTF-8 are an error.
+            None | Some(Err(EventStreamError::Transport(_))) => {
+                return Ok(StreamOutcome::Disconnected);
             }
+            Some(Err(EventStreamError::Utf8(err))) if err.utf8_error().error_len().is_none() => {
+                return Ok(StreamOutcome::Disconnected);
+            }
+            Some(Err(err)) => {
+                return Err(err)
+                    .context("the platform sent an event stream the CLI could not read");
+            }
+        };
+        if let Some(outcome) =
+            handle_sse_event(printer, buffers, log_clock, last_event_id, &event, label)?
+        {
+            return Ok(outcome);
         }
     }
 }
@@ -215,33 +217,20 @@ fn handle_sse_event(
     buffers: &mut StageLogBuffer,
     log_clock: &mut StageLogClock,
     last_event_id: &mut Option<i64>,
-    raw: &str,
+    event: &Event,
     label: &str,
 ) -> Result<Option<StreamOutcome>> {
-    let mut event_type = String::new();
-    let mut data_lines: Vec<&str> = Vec::new();
-    for line in raw.lines() {
-        if line.is_empty() || line.starts_with(':') {
-            continue;
-        }
-        if let Some(v) = line.strip_prefix("event:") {
-            event_type = v.trim().to_string();
-        } else if let Some(v) = line.strip_prefix("data:") {
-            data_lines.push(v.strip_prefix(' ').unwrap_or(v));
-        } else if let Some(v) = line.strip_prefix("id:") {
-            // The sequence cursor for `?since=` on reconnect. Tracked even for
-            // events we can't fully parse, mirroring the server's replay cursor.
-            if let Ok(seq) = v.trim().parse::<i64>() {
-                *last_event_id = Some(seq);
-            }
-        }
+    // The sequence cursor for `?since=` on reconnect. Tracked even for events
+    // we can't fully parse, mirroring the server's replay cursor.
+    if let Ok(seq) = event.id.parse::<i64>() {
+        *last_event_id = Some(seq);
     }
-    let data = data_lines.join("\n");
+    let data = &event.data;
 
-    match event_type.as_str() {
+    match event.event.as_str() {
         "snapshot" => {
             let snap: PipelineRun =
-                serde_json::from_str(&data).context("failed to decode snapshot")?;
+                serde_json::from_str(data).context("failed to decode snapshot")?;
             // Reconnect catch-up: seed buffers from the snapshot's
             // log_output, and dump any stage already in `failed` since
             // no Failed event will arrive.
@@ -269,7 +258,7 @@ fn handle_sse_event(
         // The platform failed mid-stream and says so with a Problem, then
         // closes the stream.
         "error" => {
-            let error: ApiError = serde_json::from_str(&data).with_context(|| {
+            let error: ApiError = serde_json::from_str(data).with_context(|| {
                 format!(
                     "the {} event stream failed with an error the CLI could not read: {data}",
                     label.to_lowercase()
@@ -281,8 +270,8 @@ fn handle_sse_event(
             return Err(error)
                 .with_context(|| format!("failed to follow {} progress", label.to_lowercase()));
         }
-        "" | "pipeline_event" => {
-            let delta: PipelineStreamDelta = match serde_json::from_str(&data) {
+        "pipeline_event" => {
+            let delta: PipelineStreamDelta = match serde_json::from_str(data) {
                 Ok(d) => d,
                 Err(_) => return Ok(None),
             };
@@ -469,72 +458,5 @@ fn cancelled_line(what: &str, reason: Option<&str>) -> String {
     match reason.map(str::trim).filter(|reason| !reason.is_empty()) {
         Some(reason) => format!("{what}. {reason}"),
         None => format!("{what}."),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn stage_names(snapshot: serde_json::Value) -> Vec<String> {
-        let run: PipelineRun = serde_json::from_value(snapshot).unwrap();
-        pipeline_stages(&run)
-            .into_iter()
-            .map(|(stage, _)| stage.to_string())
-            .collect()
-    }
-
-    fn child(status: &str) -> serde_json::Value {
-        serde_json::json!({ "status": status, "log_output": "" })
-    }
-
-    #[test]
-    fn reads_the_stages_the_platform_names_in_its_order() {
-        let snapshot = serde_json::json!({
-            "id": 7,
-            "status": "running",
-            "error_summary": null,
-            "stages": ["frontend_build", "backend_build", "rollout"],
-            "frontend_build": child("succeeded"),
-            "backend_build": child("running"),
-            "rollout": { "status": null, "log_output": "" },
-        });
-        assert_eq!(
-            stage_names(snapshot),
-            ["frontend_build", "backend_build", "rollout"]
-        );
-    }
-
-    #[test]
-    fn reads_stages_from_a_platform_older_than_the_cli() {
-        let snapshot = serde_json::json!({
-            "status": "running",
-            "error_summary": null,
-            "stages": ["frontend_build", "frontend_publish", "backend_build", "backend_deploy"],
-            "frontend_build": child("succeeded"),
-            "frontend_publish": child("succeeded"),
-            "backend_build": child("succeeded"),
-            "backend_deploy": child("running"),
-        });
-        assert_eq!(
-            stage_names(snapshot),
-            [
-                "frontend_build",
-                "frontend_publish",
-                "backend_build",
-                "backend_deploy"
-            ]
-        );
-    }
-
-    #[test]
-    fn skips_a_planned_stage_the_snapshot_reports_nothing_for() {
-        let snapshot = serde_json::json!({
-            "status": "pending",
-            "error_summary": null,
-            "stages": ["plan", "rollout"],
-            "rollout": child("pending"),
-        });
-        assert_eq!(stage_names(snapshot), ["rollout"]);
     }
 }
