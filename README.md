@@ -56,15 +56,3 @@ cargo build --release
 ```
 
 The binary lands at `target/release/gbandit`.
-
-## Pointing at a non-prod platform
-
-Set these env vars before invoking the CLI:
-
-```sh
-export GBANDIT_AUTH_ORIGIN=http://auth.gbandit.localhost
-export GBANDIT_PLATFORM_API_ORIGIN=http://platform.gbandit.localhost/api
-export GBANDIT_DOCS_ORIGIN=http://docs.gbandit.localhost
-```
-
-Credentials are stored per platform domain (`credentials-<domain>.json`), so logging in to a dev platform doesn't log you out of prod.
