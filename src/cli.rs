@@ -32,12 +32,8 @@ pub(crate) enum Command {
     },
     /// Show who you're logged in as.
     Whoami,
-    /// Update the gbandit CLI to the latest release.
-    Update {
-        /// Install a specific release tag instead of the latest release.
-        #[arg(long)]
-        tag: Option<String>,
-    },
+    /// Update the gbandit CLI to the release the platform hands out.
+    Update,
     /// Run a SQL query against the game's database.
     Sql {
         /// The SQL to run.

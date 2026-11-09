@@ -7,18 +7,24 @@ The command-line client for the [gbandit](https://gbandit.com) game-hosting plat
 Linux / macOS:
 
 ```sh
-curl -fsSL https://github.com/gbandit/cli/releases/latest/download/install.sh | sh
+curl -fsSL https://gbandit.com/install.sh | sh
 ```
 
-Drops the binary in `$HOME/.local/bin/gbandit`. Override with `GBANDIT_INSTALL_DIR` or pin a version with `GBANDIT_VERSION=v0.2.0`.
+Drops the binary in `$HOME/.local/bin/gbandit`. Override with `GBANDIT_INSTALL_DIR`.
 
 Windows (PowerShell):
 
 ```powershell
-irm https://github.com/gbandit/cli/releases/latest/download/install.ps1 | iex
+irm https://gbandit.com/install.ps1 | iex
 ```
 
-Drops `gbandit.exe` in `%LOCALAPPDATA%\gbandit\bin` and adds it to your user `PATH`. Override with `$env:GBANDIT_INSTALL_DIR` or pin a version with `$env:GBANDIT_VERSION = 'v0.2.0'`.
+Drops `gbandit.exe` in `%LOCALAPPDATA%\gbandit\bin` and adds it to your user `PATH`. Override with `$env:GBANDIT_INSTALL_DIR`.
+
+Both install the release gbandit.com currently serves. The binaries are downloaded from this repository's GitHub releases and checked against the SHA-256 checksums gbandit.com publishes for them, so a binary that differs from the one built here is refused. Every archive carries a [build provenance attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations) you can check yourself:
+
+```sh
+gh attestation verify gbandit-x86_64-unknown-linux-musl.tar.gz --repo gbandit/cli
+```
 
 Prebuilt binaries are published for:
 
@@ -47,7 +53,7 @@ Run `gbandit <command> --help` for the details of each command.
 
 `gbandit deploy` builds and rolls out to dev. It takes no environment, because dev is the only one a build can reach. Prod is never built: `gbandit promote` rolls out what dev runs to prod, so prod serves exactly what you tested in dev.
 
-`gbandit update` downloads the latest GitHub release for your OS/architecture and replaces the installed binary. Pin a specific release with `gbandit update --tag vX.Y.Z`.
+`gbandit update` installs the release gbandit.com currently serves, checked against the same checksums as the install scripts.
 
 ## Building from source
 

@@ -23,7 +23,7 @@ use clap::Parser;
 use crate::cli::{Cli, Command};
 use crate::printer::Printer;
 
-pub(crate) const BUILD_VERSION: &str = env!("GBANDIT_BUILD_VERSION");
+pub(crate) const BUILD_VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 
 #[tokio::main]
 async fn main() -> Result<()> {

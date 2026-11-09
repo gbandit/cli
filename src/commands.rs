@@ -26,11 +26,7 @@ pub(crate) async fn run(command: Command, printer: &Printer) -> Result<()> {
             }
         }
         Command::Whoami => auth_session::whoami(printer).await,
-        Command::Update { tag } => {
-            ReleaseInstaller::github()
-                .install(printer, tag.as_deref())
-                .await
-        }
+        Command::Update => ReleaseInstaller::new().install(printer).await,
         Command::Sql {
             environment,
             project,

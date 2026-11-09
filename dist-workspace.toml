@@ -1,0 +1,37 @@
+[workspace]
+members = ["cargo:."]
+
+[dist]
+cargo-dist-version = "0.34.0"
+ci = "github"
+pr-run-mode = "skip"
+targets = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+]
+# No dist installers: install.sh and install.ps1 are served by the platform
+# with the checksums it pins, and dist's shell installer skips verification
+# where sha256sum is missing, as on macOS (ADR 0053).
+installers = []
+unix-archive = ".tar.gz"
+windows-archive = ".zip"
+checksum = "sha256"
+source-tarball = false
+github-attestations = true
+github-attestations-phase = "host"
+
+# Cross-compiled with MSVC on GitHub's x64 Windows runner instead of in dist's
+# default third-party cargo-xwin container, so every binary is built by
+# GitHub's own runner images.
+[dist.github-custom-runners]
+aarch64-pc-windows-msvc = "windows-2022"
+
+[dist.github-action-commits]
+"actions/checkout" = "d23441a48e516b6c34aea4fa41551a30e30af803" # v6.1.0
+"actions/upload-artifact" = "cf430e030ddbb5b0abf93d22962f4752f3646cd9" # v7.0.2
+"actions/download-artifact" = "9000827ccba6bdab643e8b6fd33ac0654aef8333" # v8.0.2
+"actions/attest" = "1e69f48acb82d1966a394da916b4c1698aa569d6" # v4.2.2
