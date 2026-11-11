@@ -1,6 +1,6 @@
 [package]
 name = "gbandit"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 repository = "https://github.com/gbandit/cli"
 
@@ -29,3 +29,8 @@ futures-util = "0.3.34"
 [dev-dependencies]
 axum = { version = "0.8", features = ["multipart"] }
 tokio = { version = "1", features = ["process", "net", "macros", "rt-multi-thread", "time"] }
+
+# The profile cargo-dist builds release archives with.
+[profile.dist]
+inherits = "release"
+lto = "thin"
